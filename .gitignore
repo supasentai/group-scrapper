@@ -1,0 +1,13 @@
+# Scanned Facebook data and generated exports (may contain personal information)
+*.csv
+results/
+merged_*/
+
+# Local/runtime artifacts
+downloads/
+tmp/
+*.log
+*.tmp
+
+# Local checkpoint backups; keep the project manifest tracked separately.
+checkpoints.backup*.json
