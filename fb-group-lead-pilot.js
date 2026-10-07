@@ -146,9 +146,13 @@
   // để không xóa từ tự nhiên như "I like this" hoặc "please share".
   const INLINE_ACTION_PATTERN = /(?:Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi)(?=\s*(?:\d+|Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi|$))/g;
   const INLINE_CHROME_PATTERN = /(?:See translation|View translation|Xem bản dịch|Xem thêm|See more|Đã chỉnh sửa|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor|Chuyên gia trong nhóm|Group expert)(?=\s*(?:·|•|Theo dõi|Follow|\d+|$))/gi;
+  const LEADING_VERIFIED_ACCOUNT_PATTERN = /^(?:Tài khoản đã xác minh(?:\s+(?:nổi bật|nhiều nhất))?)(?:\s*[·•]\s*(?:Theo dõi|Đang theo dõi|Follow(?:ing)?))?\s*/iu;
   const LEADING_FOLLOW_PATTERN = /^(?:[·•⋅]\s*(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?:\s*[·•⋅]\s*)?|(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?=[A-ZÀ-Ỹ]))/u;
   const AUTHOR_STATUS_PATTERN = /(?:Chỉ báo trạng thái online|Online status)(?:\s*(?:Đang hoạt động|Active now))?|(?:Đang hoạt động|Active now)$/gi;
   const LEADING_AUTHOR_STATUS_PATTERN = /^(?:Chỉ báo trạng thái online|Online status)(?:\s*(?:Đang hoạt động|Active now))?\s*/iu;
+  const CONCATENATED_DOCTOR_SUFFIX_PATTERN = /^(.*?\b(?:Dr|Doctor)\.?\s+[\p{L}][\p{L}'’-]*)(?:[.·•\s]+(?:last year|this year|last month|this month|yesterday|today)(?:[.!?]\s*)?(?=[A-ZÀ-Ỹ]|$).*)$/iu;
+  const LEADING_CONCATENATED_TIME_PATTERN = /^[\s.·•-]*(?:last year|this year|last month|this month|yesterday|today)(?=[A-ZÀ-Ỹ]|$)/iu;
+  const CONCATENATED_TIME_SENTENCE_PATTERN = /\b(last year)(?=[A-ZÀ-Ỹ][a-zà-ỹ])/giu;
 
   const UI_GROUP_HEADINGS = new Set([
     "about",
@@ -200,7 +204,9 @@
   }
 
   function cleanAuthorLabel(value) {
-    return normalizeSpace(String(value || "").replace(AUTHOR_STATUS_PATTERN, " "));
+    return normalizeSpace(String(value || "")
+      .replace(AUTHOR_STATUS_PATTERN, " ")
+      .replace(CONCATENATED_DOCTOR_SUFFIX_PATTERN, "$1"));
   }
 
   function hasFacebookChrome(rawText) {
@@ -214,6 +220,7 @@
     return UI_LINE_PATTERNS.some((pattern) => pattern.test(normalizeSpace(text)))
       || hasInlineAction
       || hasInlineChrome
+      || LEADING_VERIFIED_ACCOUNT_PATTERN.test(normalizeSpace(text))
       || /\b\d+\s+(?:reactions?|comments?|replies?)\b/i.test(text);
   }
 
@@ -409,6 +416,7 @@
     const author = normalizeSpace(authorName);
     const time = normalizeSpace(timeText);
     let cleaned = normalizeSpace(lines.join(" "));
+    cleaned = cleaned.replace(LEADING_VERIFIED_ACCOUNT_PATTERN, "");
     cleaned = cleaned.replace(LEADING_AUTHOR_STATUS_PATTERN, "");
     if (author) {
       // DOM/CSV đôi khi nối tên tác giả ngay với nội dung, ví dụ
@@ -418,6 +426,8 @@
     if (time) {
       cleaned = cleaned.replace(new RegExp(`\\s*${escapeRegExp(time)}`, "gi"), " ");
     }
+    cleaned = cleaned.replace(LEADING_CONCATENATED_TIME_PATTERN, "");
+    cleaned = cleaned.replace(CONCATENATED_TIME_SENTENCE_PATTERN, "$1. ");
     cleaned = cleaned
       .replace(/^(?:Chuyên gia trong nhóm|Group expert|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor)\s*(?:[·•]\s*(?:Theo dõi|Follow))?\s*/i, "")
       .replace(/^[·•]\s*(?:Theo dõi|Đang theo dõi|Follow(?:ing)?)\s*/i, "")
@@ -536,6 +546,7 @@
     for (const pattern of patterns) {
       for (const match of text.matchAll(pattern)) {
         const value = normalizeSpace(match[0])
+          .replace(CONCATENATED_DOCTOR_SUFFIX_PATTERN, "$1")
           .replace(/\s+(?:at|in|from|and|is|was|for|with|uses?|about|charges?|check|personally|works?|trained|world|renowned)\b.*$/i, "")
           .replace(/[.,;:]+$/, "")
           .trim();

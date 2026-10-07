@@ -12,7 +12,8 @@ const HEADERS = [
   "review_status", "is_anonymous", "data_quality_flags",
 ];
 
-const UI_CONTAMINATION_PATTERN = /(?:^[·•⋅]\s*(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?:\s|[A-ZÀ-Ỹ])|^(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?=[A-ZÀ-Ỹ])|Chỉ báo trạng thái online|Online status)/u;
+const VERIFIED_ACCOUNT_PATTERN = /^Tài khoản đã xác minh(?:\s+(?:nổi bật|nhiều nhất))?(?:\s*[·•]\s*(?:Theo dõi|Đang theo dõi|Follow(?:ing)?))?/iu;
+const UI_CONTAMINATION_PATTERN = /(?:^[·•⋅]\s*(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?:\s|[A-ZÀ-Ỹ])|^(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?)(?=[A-ZÀ-Ỹ])|Chỉ báo trạng thái online|Online status|Tài khoản đã xác minh(?:\s+(?:nổi bật|nhiều nhất))?)/u;
 
 function parseCsv(input) {
   const text = String(input || "").replace(/^\uFEFF/, "");
@@ -193,6 +194,7 @@ function normalizeRows(rows, now) {
       if (!flags.includes(flag)) flags.push(flag);
     };
     if (UI_CONTAMINATION_PATTERN.test(row._raw_text)) addFlag("ui_chrome_contamination");
+    if (VERIFIED_ACCOUNT_PATTERN.test(row._raw_text)) addFlag("ui_chrome_removed");
     if (!row.name) addFlag("missing_author_name");
     if (!row.profile_url && row.is_anonymous !== "yes") addFlag("missing_profile_url");
     if (row.source_type !== "post" && row.comment_url === row.post_url) addFlag("comment_permalink_missing");
@@ -316,4 +318,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport };
+module.exports = { HEADERS, parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport, writeCsv };

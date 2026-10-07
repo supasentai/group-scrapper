@@ -110,6 +110,19 @@ node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results --days
 
 Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Tên từ cột `TÊN HỘI NHÓM` là metadata tin cậy được truyền qua `--group-name`; collector không được thay bằng heading UI như `Giới thiệu` hoặc `Xem bản dịch`. Mọi dòng đầu vào đều có kết quả rõ ràng; dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
 
+### Cross-group Aggregation Phase 3
+
+`aggregate-results.js` là bước downstream xác định phạm vi bằng batch manifest:
+
+```powershell
+node .\aggregate-results.js `
+  --batch-manifest .\results\batch_manifest_<id>.json `
+  --results-dir .\results `
+  --extra-run-id scan_3d_1791368600975
+```
+
+Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi dùng lại `merge-results.js` để normalize/dedupe/classify. `zero_result` không tạo row trong master nhưng vẫn được tính; completed runs hợp lệ được đưa vào `all/leads/audit`; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
+
 ## Format báo cáo handoff
 
 Mỗi agent trả kết quả theo mẫu:

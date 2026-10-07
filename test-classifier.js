@@ -194,6 +194,22 @@ assert.equal(pilot.cleanSourceText("· Theo dõiThisI had a facelift", "", ""), 
 assert.equal(pilot.cleanSourceText("Follow the doctor instructions carefully.", "", ""), "Follow the doctor instructions carefully.");
 assert.equal(pilot.cleanSourceText("Following the care plan matters.", "", ""), "Following the care plan matters.");
 assert.equal(pilot.cleanSourceText("Active now is a natural phrase.", "", ""), "Active now is a natural phrase.");
+for (const [raw, expected] of [
+  ["Tài khoản đã xác minh · Theo dõi I am considering a facelift.", "I am considering a facelift."],
+  ["Tài khoản đã xác minh I am considering a facelift.", "I am considering a facelift."],
+  ["Tài khoản đã xác minh nổi bật I am considering a facelift.", "I am considering a facelift."],
+  ["Tài khoản đã xác minh nhiều nhất I am considering a facelift.", "I am considering a facelift."],
+  ["Tài khoản đã xác minh Message me for a consultation.", "Message me for a consultation."],
+]) assert.equal(pilot.cleanSourceText(raw, "", ""), expected);
+assert.equal(pilot.cleanAuthorLabel("Dr erham.last yearGreat"), "Dr erham");
+assert.equal(
+  pilot.cleanSourceText("Dr erham.last yearGreat results.", "", ""),
+  "Dr erham.last year. Great results.",
+);
+assert.equal(
+  pilot.analyzeText("Dr erham.last yearGreat I am considering a facelift.").doctorOrClinic,
+  "Dr erham",
+);
 const boundarySanitized = pilot.classifyRecords([{
   name: "Author",
   profile_url: "https://www.facebook.com/author/",
@@ -526,6 +542,36 @@ const naturalFollowMergedRow = mergeResults.normalizeRows([{
   text_excerpt: "Follow the doctor instructions carefully.",
 }], new Date("2026-10-07T12:00:00.000Z"))[0];
 assert.doesNotMatch(naturalFollowMergedRow.data_quality_flags, /ui_chrome_contamination/);
+const verifiedLeadMergedRow = mergeResults.normalizeRows([{
+  group_name: "Test Group",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  name: "Lead Author",
+  profile_url: "https://www.facebook.com/lead-author/",
+  published_at_text: "2026-10-06T12:00:00.000Z",
+  text_excerpt: "Tài khoản đã xác minh nổi bật I am considering a facelift and need recommendations. Has anyone had this procedure?",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(verifiedLeadMergedRow.segment, "potential_customer");
+assert.equal(
+  verifiedLeadMergedRow.text_excerpt,
+  "I am considering a facelift and need recommendations. Has anyone had this procedure?",
+);
+assert.match(verifiedLeadMergedRow.data_quality_flags, /ui_chrome_removed/);
+assert.match(verifiedLeadMergedRow.data_quality_flags, /ui_chrome_contamination/);
+const verifiedMessageMergedRow = mergeResults.normalizeRows([{
+  group_name: "Test Group",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  name: "Message Author",
+  profile_url: "https://www.facebook.com/message-author/",
+  published_at_text: "2026-10-06T12:00:00.000Z",
+  text_excerpt: "Tài khoản đã xác minh Message me for a consultation.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(verifiedMessageMergedRow.text_excerpt, "Message me for a consultation.");
+assert.match(verifiedMessageMergedRow.data_quality_flags, /ui_chrome_removed/);
+assert.match(verifiedMessageMergedRow.data_quality_flags, /ui_chrome_contamination/);
 
 const inferredComment = mergeResults.normalizeRows([{
   group_url: "https://www.facebook.com/groups/123/",

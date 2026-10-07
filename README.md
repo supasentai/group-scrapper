@@ -142,6 +142,19 @@ node .\batch-runner.js `
 
 Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Tên group từ cột `TÊN HỘI NHÓM` được truyền tin cậy vào manifest; không dùng heading UI trên Facebook để thay thế. Dòng trống, URL sai và URL trùng được ghi rõ là `skipped_blank`, `skipped_invalid` hoặc `skipped_duplicate`. Mỗi group đã chạy chỉ được ghi `zero_result` khi browser runner trả cặp artifact hợp lệ với manifest `status=zero_result`; thiếu hoặc hỏng manifest là `failed`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
+### Cross-group Aggregation Phase 3
+
+Sau khi batch hoàn tất, tạo bộ master chỉ từ các `run_id` được liệt kê trong batch manifest. Có thể thêm một run hợp lệ được chạy lại bằng `--extra-run-id`:
+
+```powershell
+node .\aggregate-results.js `
+  --batch-manifest .\results\batch_manifest_<id>.json `
+  --results-dir .\results `
+  --extra-run-id scan_3d_1791368600975
+```
+
+Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách. Kết quả gồm `fb_group_aggregate_all`, `leads`, `audit` và `aggregate_report` JSON/Markdown với group status, released/pending groups, source run IDs, số dòng raw/deduped/in-window, quality flags, anonymous và missing-profile counts.
+
 ## Chạy kiểm thử bộ phân loại
 
 ```powershell
