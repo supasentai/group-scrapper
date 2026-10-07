@@ -100,6 +100,16 @@ Manifest có `status=zero_result` khi lượt chạy không có dòng; `status=c
 
 Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Người dùng phải mở Edge với `--remote-debugging-port` và `--user-data-dir` riêng, đăng nhập thủ công một lần, sau đó runner mới mở một group root và inject collector local. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
 
+### Batch Runner Phase 2
+
+`batch-runner.js` nhận CSV có cột `TÊN HỘI NHÓM` và `LINK`, chạy các group hợp lệ theo thứ tự, tuần tự từng child process:
+
+```powershell
+node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results --days 3 --max-runtime-ms 900000
+```
+
+Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Mọi dòng đầu vào đều có kết quả rõ ràng; dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
+
 ## Format báo cáo handoff
 
 Mỗi agent trả kết quả theo mẫu:

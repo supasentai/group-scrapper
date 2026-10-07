@@ -128,6 +128,20 @@ node .\browser-runner.js `
 
 Runner mở group root, inject collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Login wall, checkpoint, CAPTCHA hoặc thiếu dependency trả JSON `needs_user_action`/`error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
 
+### Batch Runner Phase 2
+
+`batch-runner.js` xử lý tuần tự danh sách CSV có cột `TÊN HỘI NHÓM` và `LINK`, dùng lại browser runner cho từng group:
+
+```powershell
+node .\batch-runner.js `
+  --groups-file .\groups.csv `
+  --results-dir .\results `
+  --days 3 `
+  --max-runtime-ms 900000
+```
+
+Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Dòng trống, URL sai và URL trùng được ghi rõ là `skipped_blank`, `skipped_invalid` hoặc `skipped_duplicate`. Mỗi group đã chạy chỉ được ghi `zero_result` khi browser runner trả cặp artifact hợp lệ với manifest `status=zero_result`; thiếu hoặc hỏng manifest là `failed`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
+
 ## Chạy kiểm thử bộ phân loại
 
 ```powershell
