@@ -33,7 +33,7 @@ Công cụ chỉ đọc nội dung Facebook đã tải và hiển thị trong ta
 - Loại thẩm mỹ và tên bác sĩ/phòng khám được nhắc tới.
 - Điểm ý định, tính xác thực và rủi ro seeding.
 - Một đoạn nội dung ngắn phục vụ kiểm duyệt.
-- Cờ chất lượng như `anonymous_author`, `ui_chrome_removed`, `text_truncated` hoặc `comment_permalink_missing`.
+- Cờ chất lượng như `anonymous_author`, `ui_chrome_removed`, `ui_chrome_contamination`, `text_truncated` hoặc `comment_permalink_missing`.
 
 CSV pilot cố định 8 cột theo thứ tự: `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`. Collector chỉ xuất một file raw/all cho mỗi group; các điểm số và trường phân loại được giữ nội bộ để bước merge/QA downstream tạo `leads`/`audit` khi cần. `published_at_text` được ghi thành ISO timestamp khi Facebook cung cấp đủ thông tin; nếu không phân giải được thì giữ text gốc để tránh đoán sai ngày.
 
@@ -101,6 +101,33 @@ node .\ingest-downloads.js "C:\Users\<user>\Downloads" .\results
 
 Ingestion chỉ nhận cặp `fb_group_scan_*.csv` + manifest tương ứng, kiểm tra đúng 8 field trên từng dòng, `row_count` và khớp `group_url`/`group_name`, bỏ qua file thiếu manifest hoặc còn đuôi tải tạm, rồi copy không phá hủy vào `results\<run_id>\raw`. Chạy lại cùng nguồn là idempotent; kết quả được ghi ở `results\ingestion_report.json` và từng run có `ingestion_report.json` riêng.
 
+## Browser Runner Phase 1
+
+Runner dùng Edge CDP với profile riêng, không nhập mật khẩu, OTP hoặc CAPTCHA. Nếu Playwright chưa có, runner báo dependency thiếu và không tự cài.
+
+Chuẩn bị profile một lần:
+
+```powershell
+node .\browser-runner.js --prepare-profile `
+  --cdp-endpoint http://127.0.0.1:9222 `
+  --profile-dir "$env:LOCALAPPDATA\Microsoft\Edge\User Data\CodexGroupScraper"
+```
+
+Dùng command trong JSON output để mở Edge, đăng nhập thủ công trong profile riêng, rồi chạy một group:
+
+```powershell
+node .\browser-runner.js `
+  --group-url "https://www.facebook.com/groups/<group-id>/" `
+  --collector-path .\fb-group-lead-pilot.js `
+  --cdp-endpoint http://127.0.0.1:9222 `
+  --days 30 `
+  --max-rounds 0 `
+  --max-runtime-ms 900000 `
+  --results-dir .\results
+```
+
+Runner mở group root, inject collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Login wall, checkpoint, CAPTCHA hoặc thiếu dependency trả JSON `needs_user_action`/`error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
+
 ## Chạy kiểm thử bộ phân loại
 
 ```powershell
@@ -128,3 +155,4 @@ Không nên mở rộng lên 365 ngày trước khi đánh dấu tối thiểu 1
 - Nickname Facebook tự sinh dạng `TrustyRhino842`, `SunnyKangaroo8613` hoặc `PastelLychee5270` được đánh dấu ẩn danh thay vì loại bỏ.
 - Link dạng `/groups/.../user/ID/` được chuẩn hóa thành `https://www.facebook.com/ID/`.
 - Kết quả phân loại là bước sàng lọc, không phải xác minh danh tính. Cần duyệt thủ công trước khi sử dụng cho hoạt động kinh doanh.
+- `no_post_rows_detected` trong quality report là cảnh báo coverage khi nguồn chỉ có comment; không tự tạo post giả để lấp dữ liệu.

@@ -48,6 +48,8 @@ Ngưỡng chọn lead hiện tại (dùng nội bộ trước khi chia file): `i
 6. Nhập cặp file từ Downloads bằng `node .\ingest-downloads.js "C:\Users\<user>\Downloads" .\results`. Dữ liệu được copy không phá hủy vào `results\<run_id>\raw`; chạy lại cùng nguồn không tạo bản sao xử lý mới.
 7. Nếu có nhiều file nguồn cần gộp, chạy `node .\merge-results.js .\results\<run_id>\raw 30`. Lệnh này chỉ áp dụng cho đợt mới và không sửa các CSV nguồn. Với đợt 365 ngày, dùng tham số `365` tương ứng.
 
+Có thể dùng `browser-runner.js` cho Phase 1 với Edge CDP và profile riêng. Chạy `node .\browser-runner.js --prepare-profile --cdp-endpoint http://127.0.0.1:9222 --profile-dir "<dedicated-edge-profile>"`, đăng nhập thủ công, rồi chạy runner với `--group-url`, `--collector-path`, `--results-dir`, `--days`, `--max-rounds` và `--max-runtime-ms`. Runner không nhập mật khẩu/OTP/CAPTCHA và chỉ xử lý một group mỗi lần.
+
 Chỉ mở rộng phạm vi lên 365 ngày sau khi đã kiểm duyệt tối thiểu 100 dòng pilot.
 
 ## 6. Nguyên tắc sử dụng

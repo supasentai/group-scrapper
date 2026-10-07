@@ -177,6 +177,32 @@ assert.equal(pilot.cleanSourceText("· Theo dõi I am considering a facelift", "
 assert.equal(pilot.cleanSourceText("· Đang theo dõi I had a facelift", "", ""), "I had a facelift");
 assert.equal(pilot.cleanSourceText("· Following I need a surgeon", "", ""), "I need a surgeon");
 assert.equal(pilot.cleanSourceText("· Theo dõiThisI had a facelift", "", ""), "ThisI had a facelift");
+assert.equal(pilot.cleanSourceText("Follow the doctor instructions carefully.", "", ""), "Follow the doctor instructions carefully.");
+assert.equal(pilot.cleanSourceText("Following the care plan matters.", "", ""), "Following the care plan matters.");
+assert.equal(pilot.cleanSourceText("Active now is a natural phrase.", "", ""), "Active now is a natural phrase.");
+const boundarySanitized = pilot.classifyRecords([{
+  name: "Author",
+  profile_url: "https://www.facebook.com/author/",
+  source_type: "post",
+  post_url: "https://www.facebook.com/groups/123/posts/456/",
+  comment_url: "",
+  published_at_text: "2026-10-06T12:00:00.000Z",
+  text: "· Theo dõiThis is a genuine post text.",
+  data_quality_flags: "ui_chrome_removed",
+}], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" })[0];
+assert.equal(boundarySanitized.text_excerpt, "This is a genuine post text.");
+assert.match(boundarySanitized.data_quality_flags, /ui_chrome_removed/);
+assert.doesNotMatch(boundarySanitized.text_excerpt, /^·\s*Theo dõi/i);
+const liveResidueSanitized = pilot.sanitizeRecordText({
+  name: "Sk Rahan",
+  published_at_text: "",
+  text: "Chỉ báo trạng thái onlineĐang hoạt độngSk RahanIf you’re considering a facelift.",
+});
+assert.equal(liveResidueSanitized, "If you’re considering a facelift.");
+assert.equal(
+  pilot.cleanAuthorLabel("Sk RahanChỉ báo trạng thái onlineĐang hoạt động"),
+  "Sk Rahan",
+);
 assert.deepEqual(pilot.detectProcedures("I had a brow lift, lower bleph and a mommy makeover."), [
   "brow_lift",
   "eyelid",
@@ -186,7 +212,7 @@ assert.equal(
   pilot.analyzeText("Dr Kachare. Uses the same techniques as Nayak.").doctorOrClinic,
   "Dr Kachare",
 );
-assert.equal(pilot.inferSourceType(true, "comment", 0), "comment");
+assert.equal(pilot.inferSourceType(true, "comment", 0), "post");
 assert.equal(pilot.inferSourceType(true, "post", 0), "post");
 assert.equal(pilot.inferSourceType(false, "comment", 1), "comment");
 assert.equal(pilot.inferSourceType(false, "post", 2), "reply");
@@ -272,6 +298,121 @@ assert.equal(postWithCommentUrl[0].source_type, "post");
 assert.equal(postWithCommentUrl[0].content_url, "https://www.facebook.com/groups/123/posts/456/");
 assert.equal(postWithCommentUrl[0].published_at_text, "2026-09-16T11:00:00.000Z");
 
+const duplicatePostUrlRows = pilot.classifyRecords([
+  {
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    source_type: "post",
+    post_url: "https://www.facebook.com/groups/123/posts/456/",
+    comment_url: "",
+    published_at_text: "1h",
+    published_at: "2026-09-16T11:00:00.000Z",
+    text: "I had a facelift and the recovery was difficult.",
+  },
+  {
+    name: "Second Author",
+    profile_url: "https://www.facebook.com/second-author/",
+    source_type: "post",
+    post_url: "https://www.facebook.com/groups/123/posts/456/",
+    comment_url: "",
+    published_at_text: "50m",
+    published_at: "2026-09-16T11:10:00.000Z",
+    text: "I am considering a facelift and need recommendations.",
+  },
+  {
+    name: "Explicit Comment",
+    profile_url: "https://www.facebook.com/explicit-comment/",
+    source_type: "comment",
+    post_url: "https://www.facebook.com/groups/123/posts/456/",
+    comment_url: "https://www.facebook.com/groups/123/posts/456/?comment_id=789",
+    published_at_text: "40m",
+    published_at: "2026-09-16T11:20:00.000Z",
+    text: "The recovery was much easier than I expected.",
+  },
+], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
+assert.equal(duplicatePostUrlRows[0].source_type, "post");
+assert.equal(duplicatePostUrlRows[1].source_type, "comment");
+assert.equal(duplicatePostUrlRows[1].comment_url, "https://www.facebook.com/groups/123/posts/456/");
+assert.match(duplicatePostUrlRows[1].data_quality_flags, /source_type_inferred/);
+assert.match(duplicatePostUrlRows[1].data_quality_flags, /comment_permalink_missing/);
+assert.equal(duplicatePostUrlRows[2].source_type, "comment");
+assert.equal(duplicatePostUrlRows[2].comment_url, "https://www.facebook.com/groups/123/posts/456/?comment_id=789");
+
+const duplicatePostClones = pilot.classifyRecords([
+  {
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    source_type: "post",
+    post_url: "https://www.facebook.com/groups/123/posts/456/",
+    comment_url: "",
+    published_at_text: "1h",
+    published_at: "2026-09-16T11:00:00.000Z",
+    text: "I had a facelift and the recovery was difficult.",
+  },
+  {
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    source_type: "post",
+    post_url: "https://www.facebook.com/groups/123/posts/456/",
+    comment_url: "",
+    published_at_text: "1h",
+    published_at: "2026-09-16T11:00:00.000Z",
+    text: "I had a facelift and the recovery was difficult.",
+  },
+], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
+assert.deepEqual(duplicatePostClones.map((row) => row.source_type), ["post", "post"]);
+const structuralQualityFlags = mergeResults.qualityFlagsForReport(
+  { post: 1, comment: 1 },
+  { source_type_inferred: 1, comment_permalink_missing: 1 },
+  2,
+);
+assert.deepEqual(structuralQualityFlags, ["source_type_inferred", "comment_permalink_missing"]);
+const duplicateScanPostUrl = "https://www.facebook.com/groups/123/posts/456/";
+const mergedDuplicatePostRows = mergeResults.normalizeRows([
+  {
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: duplicateScanPostUrl,
+    source_type: "post",
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    published_at_text: "2026-09-16T11:00:00.000Z",
+    text_excerpt: "I had a facelift and the recovery was difficult.",
+  },
+  {
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: duplicateScanPostUrl,
+    source_type: "post",
+    name: "Second Author",
+    profile_url: "https://www.facebook.com/second-author/",
+    published_at_text: "2026-09-16T11:10:00.000Z",
+    text_excerpt: "I am considering a facelift and need recommendations.",
+  },
+], new Date("2026-09-17T12:00:00.000Z"));
+assert.deepEqual(mergedDuplicatePostRows.map((row) => row.source_type), ["post", "comment"]);
+assert.match(mergedDuplicatePostRows[1].data_quality_flags, /source_type_inferred/);
+assert.match(mergedDuplicatePostRows[1].data_quality_flags, /comment_permalink_missing/);
+const mergedPostClones = mergeResults.normalizeRows([
+  {
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: duplicateScanPostUrl,
+    source_type: "post",
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    published_at_text: "2026-09-16T11:00:00.000Z",
+    text_excerpt: "I had a facelift and the recovery was difficult.",
+  },
+  {
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: duplicateScanPostUrl,
+    source_type: "post",
+    name: "Root Author",
+    profile_url: "https://www.facebook.com/root-author/",
+    published_at_text: "2026-09-16T11:00:00.000Z",
+    text_excerpt: "I had a facelift and the recovery was difficult.",
+  },
+], new Date("2026-09-17T12:00:00.000Z"));
+assert.deepEqual(mergedPostClones.map((row) => row.source_type), ["post", "post"]);
+
 const noiseRow = pilot.classifyRecords([{
   name: "Someone",
   profile_url: "https://www.facebook.com/someone/",
@@ -347,6 +488,30 @@ assert.equal(mergedScanRows[2].post_url, scanPostUrl);
 assert.equal(mergedScanRows[2].source_type, "reply");
 assert.equal(mergedScanRows[2].content_url, `${scanPostUrl}?reply_comment_id=790`);
 assert.equal(mergedScanRows[0].published_at, "2026-10-06T12:00:00.000Z");
+
+const contaminatedMergedRow = mergeResults.normalizeRows([{
+  group_name: "Test Group",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  name: "Sk RahanChỉ báo trạng thái onlineĐang hoạt động",
+  profile_url: "https://www.facebook.com/sk-rahan/",
+  published_at_text: "2026-10-06T12:00:00.000Z",
+  text_excerpt: "· Theo dõiThisI had a facelift",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(contaminatedMergedRow.name, "Sk Rahan");
+assert.match(contaminatedMergedRow.data_quality_flags, /ui_chrome_contamination/);
+const naturalFollowMergedRow = mergeResults.normalizeRows([{
+  group_name: "Test Group",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  name: "Named person",
+  profile_url: "https://www.facebook.com/named-person/",
+  published_at_text: "2026-10-06T12:00:00.000Z",
+  text_excerpt: "Follow the doctor instructions carefully.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.doesNotMatch(naturalFollowMergedRow.data_quality_flags, /ui_chrome_contamination/);
 
 const inferredComment = mergeResults.normalizeRows([{
   group_url: "https://www.facebook.com/groups/123/",

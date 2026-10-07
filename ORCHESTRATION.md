@@ -51,6 +51,7 @@ Chỉ đọc code/output và tạo báo cáo QA. Kiểm tra tối thiểu:
 - `source_type` đúng `post`, `comment` hoặc `reply`.
 - `content_url` khớp với loại nguồn.
 - Text không còn UI như `Trả lời`, `Like`, `Share`, `Xem thêm`.
+- Quality report phải nêu `ui_chrome_contamination` nếu raw text còn prefix/status UI sau cleanup.
 - `published_at_text` là ISO timestamp khi parse được.
 - Có output hoặc trạng thái rõ cho từng group.
 - Không có duplicate bất thường.
@@ -92,6 +93,12 @@ node .\checkpoint-tools.js record-run `
 File scan vẫn phải được tải kể cả khi chỉ có header. Không có file không được xem là `zero result`; đó là trạng thái chưa xác định. Việc chia `leads`/`audit` chỉ thực hiện ở bước merge/QA downstream.
 
 Manifest có `status=zero_result` khi lượt chạy không có dòng; `status=completed` khi có dữ liệu hoàn tất. Lượt bị dừng thủ công có dữ liệu partial dùng `status=stopped` và không được ingestion nhận; lượt dừng khi chỉ có header vẫn là `zero_result`.
+
+`no_post_rows_detected` là warning về coverage khi run chỉ thu được comment; không được tự sinh post row.
+
+### Browser Runner Phase 1
+
+Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Người dùng phải mở Edge với `--remote-debugging-port` và `--user-data-dir` riêng, đăng nhập thủ công một lần, sau đó runner mới mở một group root và inject collector local. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
 
 ## Format báo cáo handoff
 

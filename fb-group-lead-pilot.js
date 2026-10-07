@@ -146,6 +146,9 @@
   // để không xóa từ tự nhiên như "I like this" hoặc "please share".
   const INLINE_ACTION_PATTERN = /(?:Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi)(?=\s*(?:\d+|Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi|$))/g;
   const INLINE_CHROME_PATTERN = /(?:See translation|View translation|Xem bản dịch|Xem thêm|See more|Đã chỉnh sửa|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor|Chuyên gia trong nhóm|Group expert)(?=\s*(?:·|•|Theo dõi|Follow|\d+|$))/gi;
+  const LEADING_FOLLOW_PATTERN = /^(?:[·•⋅]\s*(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?:\s*[·•⋅]\s*)?|(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?=[A-ZÀ-Ỹ]))/u;
+  const AUTHOR_STATUS_PATTERN = /(?:Chỉ báo trạng thái online|Online status)(?:\s*(?:Đang hoạt động|Active now))?|(?:Đang hoạt động|Active now)$/gi;
+  const LEADING_AUTHOR_STATUS_PATTERN = /^(?:Chỉ báo trạng thái online|Online status)(?:\s*(?:Đang hoạt động|Active now))?\s*/iu;
 
   const UI_GROUP_HEADINGS = new Set([
     "about",
@@ -194,6 +197,10 @@
 
   function escapeRegExp(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function cleanAuthorLabel(value) {
+    return normalizeSpace(String(value || "").replace(AUTHOR_STATUS_PATTERN, " "));
   }
 
   function hasFacebookChrome(rawText) {
@@ -400,6 +407,7 @@
     const author = normalizeSpace(authorName);
     const time = normalizeSpace(timeText);
     let cleaned = normalizeSpace(lines.join(" "));
+    cleaned = cleaned.replace(LEADING_AUTHOR_STATUS_PATTERN, "");
     if (author) {
       // DOM/CSV đôi khi nối tên tác giả ngay với nội dung, ví dụ
       // "Maria CarlssonI had ..."; không yêu cầu khoảng trắng ở đây.
@@ -411,7 +419,7 @@
     cleaned = cleaned
       .replace(/^(?:Chuyên gia trong nhóm|Group expert|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor)\s*(?:[·•]\s*(?:Theo dõi|Follow))?\s*/i, "")
       .replace(/^[·•]\s*(?:Theo dõi|Đang theo dõi|Follow(?:ing)?)\s*/i, "")
-      .replace(/^(?:Theo dõi|Đang theo dõi|Follow(?:ing)?)\s*[·•]?\s*/i, "")
+      .replace(LEADING_FOLLOW_PATTERN, "")
       .replace(INLINE_ACTION_PATTERN, " ")
       .replace(INLINE_CHROME_PATTERN, " ")
       .replace(/\b(?:Edited|Đã chỉnh sửa)\b/gi, "")
@@ -434,6 +442,14 @@
       .replace(/(?:…|\.\.\.)\s*$/g, "")
       .replace(/\s+\d+\s*$/g, "")
       .trim();
+  }
+
+  function sanitizeRecordText(record) {
+    return cleanSourceText(
+      record?.text ?? record?.text_excerpt ?? "",
+      record?.name || "",
+      record?.published_at_text || "",
+    );
   }
 
   function parseFacebookTime(value, now = new Date()) {
@@ -663,17 +679,17 @@
     const links = [...own.querySelectorAll('a[href][role="link"], a[href]')];
     for (const link of links) {
       const profileUrl = normalizeProfileUrl(link.getAttribute("href"));
-      const name = normalizeSpace(link.textContent || link.getAttribute("aria-label"));
+      const name = cleanAuthorLabel(link.textContent || link.getAttribute("aria-label"));
       if (profileUrl && name && name.length >= 2 && name.length <= 100) {
         const isAnonymous = isLikelyAnonymousAlias(name);
         return { name, profileUrl: isAnonymous ? "" : profileUrl, isAnonymous };
       }
     }
 
-    const raw = normalizeSpace(own.innerText);
+    const raw = cleanAuthorLabel(normalizeSpace(own.innerText));
     const inferred = inferAuthorFromText(raw);
-    const firstLine = raw.split(/\r?\n/).map(normalizeSpace).find(Boolean) || "";
-    const name = inferred.name || firstLine;
+    const firstLine = raw.split(/\r?\n/).map(cleanAuthorLabel).find(Boolean) || "";
+    const name = cleanAuthorLabel(inferred.name || firstLine);
     const isAnonymous = inferred.isAnonymous || isLikelyAnonymousAlias(name);
     return {
       name: isAnonymous || inferred.name ? name : "",
@@ -751,9 +767,64 @@
   }
 
   function inferSourceType(isRootArticle, contentLinkType, articleDepth) {
-    if (contentLinkType && contentLinkType !== "post") return contentLinkType;
     if (isRootArticle) return "post";
+    if (contentLinkType && contentLinkType !== "post") return contentLinkType;
     return articleDepth >= 2 ? "reply" : "comment";
+  }
+
+  function hasExplicitCommentEvidence(record) {
+    const sourceType = normalizeSpace(record?.source_type).toLowerCase();
+    if (sourceType === "comment" || sourceType === "reply") return true;
+    const postUrl = canonicalPostUrl(record?.post_url || "");
+    const contentUrl = canonicalContentUrl(record?.comment_url || record?.content_url || "");
+    if (/(?:comment_id|reply_comment_id)=/i.test(`${record?.comment_url || ""} ${record?.content_url || ""}`)) {
+      return true;
+    }
+    return Boolean(postUrl && contentUrl && contentUrl !== postUrl);
+  }
+
+  function recordClassificationIdentity(record) {
+    const author = normalizeSpace(record?.profile_url)
+      || `name:${normalizeSpace(record?.name).toLowerCase() || "unknown"}`;
+    return `${author}::${textFingerprint(record?.text || "")}`;
+  }
+
+  function inferDuplicatePostComments(records) {
+    const byPost = new Map();
+    for (const record of records) {
+      const postUrl = canonicalPostUrl(record?.post_url || record?.content_url || "");
+      if (!postUrl) continue;
+      if (!byPost.has(postUrl)) byPost.set(postUrl, []);
+      byPost.get(postUrl).push(record);
+    }
+
+    for (const group of byPost.values()) {
+      let rootSeen = false;
+      const seenIdentities = new Set();
+      for (const record of group) {
+        const identity = recordClassificationIdentity(record);
+        const explicit = hasExplicitCommentEvidence(record);
+        const sourceType = normalizeSpace(record?.source_type).toLowerCase();
+        if (!explicit && sourceType === "post") {
+          if (!rootSeen) {
+            rootSeen = true;
+          } else if (!seenIdentities.has(identity)) {
+            record.source_type = "comment";
+            record.comment_url = record.comment_url || canonicalPostUrl(record.post_url);
+            const flags = String(record.data_quality_flags || "")
+              .split(/[;|]/)
+              .map((flag) => flag.trim())
+              .filter(Boolean);
+            for (const flag of ["source_type_inferred", "comment_permalink_missing"]) {
+              if (!flags.includes(flag)) flags.push(flag);
+            }
+            record.data_quality_flags = flags.join("; ");
+          }
+        }
+        seenIdentities.add(identity);
+      }
+    }
+    return records;
   }
 
   function collectRenderedRecords() {
@@ -811,9 +882,12 @@
   }
 
   function classifyRecords(rawRecords, groupContext = {}) {
-    const candidateRecords = rawRecords.filter((record) =>
+    const candidateRecords = inferDuplicatePostComments(rawRecords.filter((record) =>
       record && normalizeSpace(record.text)
-    );
+    ).map((record) => ({
+      ...record,
+      text: sanitizeRecordText(record),
+    })).filter((record) => normalizeSpace(record.text)));
     const byAuthor = new Map();
     const byFingerprint = new Map();
     for (const record of candidateRecords) {
@@ -1187,6 +1261,8 @@
     classifyRecords,
     clearCheckpoint,
     cleanSourceText,
+    sanitizeRecordText,
+    cleanAuthorLabel,
     detectProcedures,
     isLikelyAnonymousAlias,
     getGroupContext,

@@ -12,6 +12,8 @@ const HEADERS = [
   "review_status", "is_anonymous", "data_quality_flags",
 ];
 
+const UI_CONTAMINATION_PATTERN = /(?:^[·•⋅]\s*(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?:\s|[A-ZÀ-Ỹ])|^(?:Theo dõi|theo dõi|Đang theo dõi|đang theo dõi|Follow(?:ing)?|follow(?:ing)?)(?=[A-ZÀ-Ỹ])|Chỉ báo trạng thái online|Online status)/u;
+
 function parseCsv(input) {
   const text = String(input || "").replace(/^\uFEFF/, "");
   const matrix = [];
@@ -94,7 +96,7 @@ function isAnonymousName(name) {
 function normalizeRows(rows, now) {
   const normalized = rows.map((row, index) => {
     const inferred = pilot.inferAuthorFromText(row.text_excerpt || "");
-    const rawName = String(row.name || "").trim();
+    const rawName = pilot.cleanAuthorLabel(String(row.name || "").trim());
     const timeField = String(row.published_at_text || "").trim();
     const name = rawName && rawName !== timeField ? rawName : String(inferred.name || "").trim();
     const anonymous = row.is_anonymous === "yes" || isAnonymousName(name);
@@ -136,14 +138,27 @@ function normalizeRows(rows, now) {
   const byPost = new Map();
   for (const row of normalized) {
     const key = `${row.group_url}|${row.post_url}`;
-    const count = byPost.get(key) || 0;
-    byPost.set(key, count + 1);
-    const explicit = /^(?:comment|reply)$/i.test(row._rawSourceType);
-    row._sourceTypeInferred = !explicit;
-    if (explicit) row.source_type = row._rawSourceType.toLowerCase();
+    if (!byPost.has(key)) byPost.set(key, { rootSeen: false, identities: new Set() });
+    const state = byPost.get(key);
+    const identity = `${row.profile_url || `name:${row.name || "unknown"}`}|${pilot.textFingerprint(row.text_excerpt)}`;
+    const explicitType = /^(?:comment|reply)$/i.test(row._rawSourceType);
+    const explicitPermalink = /(?:comment_id|reply_comment_id)=/i.test(`${row.comment_url || ""} ${row.content_url || ""}`)
+      || row.content_url !== row.post_url;
+    row._sourceTypeInferred = false;
+    if (explicitType) row.source_type = row._rawSourceType.toLowerCase();
     else if (/reply_comment_id=/i.test(row.content_url)) row.source_type = "reply";
     else if (/comment_id=/i.test(row.content_url) || row.content_url !== row.post_url) row.source_type = "comment";
-    else row.source_type = count === 0 ? "post" : "comment";
+    else if (!state.rootSeen) {
+      row.source_type = "post";
+      state.rootSeen = true;
+    } else if (!state.identities.has(identity)) {
+      row.source_type = "comment";
+      row._sourceTypeInferred = true;
+    } else {
+      row.source_type = "post";
+    }
+    if (explicitPermalink) row._sourceTypeInferred = false;
+    state.identities.add(identity);
     if (row.source_type !== "post" && !row.comment_url) {
       row.comment_url = row.post_url;
       row.content_url = row.post_url;
@@ -177,6 +192,7 @@ function normalizeRows(rows, now) {
     const addFlag = (flag) => {
       if (!flags.includes(flag)) flags.push(flag);
     };
+    if (UI_CONTAMINATION_PATTERN.test(row._raw_text)) addFlag("ui_chrome_contamination");
     if (!row.name) addFlag("missing_author_name");
     if (!row.profile_url && row.is_anonymous !== "yes") addFlag("missing_profile_url");
     if (row.source_type !== "post" && row.comment_url === row.post_url) addFlag("comment_permalink_missing");
@@ -229,6 +245,17 @@ function dedupe(rows) {
   return [...result.values()].sort((a, b) => (a._date || 0) - (b._date || 0) || a._index - b._index);
 }
 
+function qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, rowCount) {
+  const qualityFlags = [];
+  if (rowCount && !sourceTypeCounts.post) qualityFlags.push("no_post_rows_detected");
+  if (qualityFlagCounts.ui_chrome_removed) qualityFlags.push("source_ui_chrome_detected");
+  if (qualityFlagCounts.ui_chrome_contamination) qualityFlags.push("ui_chrome_contamination_detected");
+  if (qualityFlagCounts.text_truncated) qualityFlags.push("source_text_truncated_detected");
+  if (qualityFlagCounts.source_type_inferred) qualityFlags.push("source_type_inferred");
+  if (qualityFlagCounts.comment_permalink_missing) qualityFlags.push("comment_permalink_missing");
+  return qualityFlags;
+}
+
 function main() {
   const dir = path.resolve(process.argv[2] || path.join(__dirname, "results"));
   const days = Number(process.argv[3] || 30);
@@ -266,10 +293,7 @@ function main() {
       qualityFlagCounts[flag] = (qualityFlagCounts[flag] || 0) + 1;
     }
   }
-  const qualityFlags = [];
-  if (all.length && !sourceTypeCounts.post) qualityFlags.push("no_post_rows_detected");
-  if (qualityFlagCounts.ui_chrome_removed) qualityFlags.push("source_ui_chrome_detected");
-  if (qualityFlagCounts.text_truncated) qualityFlags.push("source_text_truncated_detected");
+  const qualityFlags = qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, all.length);
   const report = {
     source_files: sourceFiles,
     raw_rows: raw.length,
@@ -292,4 +316,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { parseCsv, normalizeRows, dedupe, chooseSourceFiles };
+module.exports = { parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport };

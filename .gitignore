@@ -6,6 +6,7 @@ merged_*/
 # Local/runtime artifacts
 downloads/
 tmp/
+node_modules/
 *.log
 *.tmp
 
