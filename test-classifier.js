@@ -32,6 +32,16 @@ const parsed = pilot.parseFacebookTime("2d", new Date("2026-09-16T12:00:00Z"));
 assert.equal(parsed.toISOString(), "2026-09-14T12:00:00.000Z");
 const parsedYear = pilot.parseFacebookTime("1 năm", new Date("2026-10-06T12:00:00Z"));
 assert.equal(parsedYear.toISOString(), "2025-10-06T12:00:00.000Z");
+const parsedExact = pilot.parseFacebookTime("September 30, 2026 at 11:32 PM", new Date("2026-10-07T12:00:00Z"));
+assert.equal(parsedExact.getFullYear(), 2026);
+assert.equal(parsedExact.getMonth(), 8);
+assert.equal(parsedExact.getDate(), 30);
+assert.equal(parsedExact.getHours(), 23);
+assert.equal(parsedExact.getMinutes(), 32);
+const parsedToday = pilot.parseFacebookTime("today at 9:15 PM", new Date("2026-10-07T12:00:00Z"));
+assert.equal(parsedToday.getDate(), 7);
+assert.equal(parsedToday.getHours(), 21);
+assert.equal(parsedToday.getMinutes(), 15);
 
 assert.equal(
   pilot.normalizeProfileUrl("https://www.facebook.com/groups/123/user/61586129957690/?ref=group"),
@@ -67,6 +77,10 @@ assert.equal(
   pilot.cleanSourceText("Maria CarlssonYeah be careful. I had a facelift1 tuầnThíchTrả lời Chia sẻ", "Maria Carlsson", "1 tuần"),
   "Yeah be careful. I had a facelift",
 );
+assert.equal(
+  pilot.cleanSourceText("Maria Carlsson\nI had a facelift\n… Xem thêm\nTrả lời", "Maria Carlsson", ""),
+  "I had a facelift",
+);
 assert.deepEqual(pilot.detectProcedures("I had a brow lift, lower bleph and a mommy makeover."), [
   "brow_lift",
   "eyelid",
@@ -76,7 +90,8 @@ assert.equal(
   pilot.analyzeText("Dr Kachare. Uses the same techniques as Nayak.").doctorOrClinic,
   "Dr Kachare",
 );
-assert.equal(pilot.inferSourceType(true, "comment", 0), "post");
+assert.equal(pilot.inferSourceType(true, "comment", 0), "comment");
+assert.equal(pilot.inferSourceType(true, "post", 0), "post");
 assert.equal(pilot.inferSourceType(false, "comment", 1), "comment");
 assert.equal(pilot.inferSourceType(false, "post", 2), "reply");
 
@@ -145,6 +160,21 @@ assert.equal(withAnonymous[1].is_anonymous, "yes");
 assert.equal(withAnonymous[1].profile_url, "");
 assert.equal(withAnonymous[2].name, "Named person");
 assert.equal(withAnonymous[2].data_quality_flags, "comment_permalink_missing");
+
+const postWithCommentUrl = pilot.classifyRecords([{
+  name: "Named person",
+  profile_url: "https://www.facebook.com/123456789/",
+  is_anonymous: false,
+  source_type: "post",
+  post_url: "https://www.facebook.com/groups/123/posts/456/",
+  comment_url: "https://www.facebook.com/groups/123/posts/456/?comment_id=789",
+  published_at_text: "1h",
+  published_at: "2026-09-16T11:00:00.000Z",
+  text: "I had my facelift and the recovery was difficult.",
+}], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
+assert.equal(postWithCommentUrl[0].source_type, "post");
+assert.equal(postWithCommentUrl[0].content_url, "https://www.facebook.com/groups/123/posts/456/");
+assert.equal(postWithCommentUrl[0].published_at_text, "2026-09-16T11:00:00.000Z");
 
 const noiseRow = pilot.classifyRecords([{
   name: "Someone",

@@ -137,7 +137,7 @@
     /\b\d+\s+(?:reactions?|comments?|replies?)\b/gi,
   ];
 
-  const TIME_TEXT_PATTERN = /\b(?:just now|now|vừa xong|\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm))\b/i;
+  const TIME_TEXT_PATTERN = /(?:\b(?:just now|now|vừa xong|today|yesterday|hôm nay|hôm qua)\b|\b\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm)\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}\s+tháng\s+\d{1,2}\b)/i;
 
   // Facebook render các nút này viết hoa chữ đầu. Giữ regex phân biệt hoa/thường
   // để không xóa từ tự nhiên như "I like this" hoặc "please share".
@@ -355,14 +355,29 @@
     for (const pattern of INLINE_UI_PATTERNS) cleaned = cleaned.replace(pattern, " ");
     cleaned = normalizeSpace(cleaned);
 
-    return normalizeSpace(cleaned)
+    cleaned = normalizeSpace(cleaned)
       .replace(/(?:See more|Xem thêm)(?:…|\.\.\.)?$/i, "")
+      .replace(/(?:…|\.\.\.)\s*$/g, "")
+      .replace(/\s+\d+\s*$/g, "")
+      .trim();
+
+    // Facebook thường nối các nút thao tác vào cuối text của bài/comment.
+    // Chỉ xóa dạng viết hoa của nhãn UI để không làm mất câu tự nhiên như
+    // "I would share" hoặc "I like this".
+    return normalizeSpace(cleaned)
+      .replace(/(?:\s+(?:Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi)(?:\s+\d+)?)+\s*$/g, "")
+      .replace(/(?:See more|Xem thêm)(?:…|\.\.\.)?$/i, "")
+      .replace(/(?:…|\.\.\.)\s*$/g, "")
       .replace(/\s+\d+\s*$/g, "")
       .trim();
   }
 
   function parseFacebookTime(value, now = new Date()) {
-    const text = normalizeSpace(value).toLowerCase();
+    const text = normalizeSpace(value)
+      .replace(/\u00a0/g, " ")
+      .replace(/\s*[·•].*$/g, "")
+      .trim()
+      .toLowerCase();
     if (!text) return null;
     if (/^(just now|now|vừa xong)$/.test(text)) return new Date(now);
 
@@ -381,10 +396,36 @@
       return new Date(now.getTime() - amount * minutesByUnit[unit] * 60_000);
     }
 
+    const relativeDay = text.match(/^(today|yesterday|hôm nay|hôm qua)(?:\s+(?:at|lúc)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/i);
+    if (relativeDay) {
+      const result = new Date(now);
+      if (/yesterday|hôm qua/i.test(relativeDay[1])) result.setDate(result.getDate() - 1);
+      if (relativeDay[2]) {
+        let hour = Number(relativeDay[2]);
+        const minute = Number(relativeDay[3] || 0);
+        const meridiem = (relativeDay[4] || "").toLowerCase();
+        if (meridiem === "pm" && hour < 12) hour += 12;
+        if (meridiem === "am" && hour === 12) hour = 0;
+        result.setHours(hour, minute, 0, 0);
+      }
+      return result;
+    }
+
+    const vietnamese = text.match(/^(\d{1,2})\s+tháng\s+(\d{1,2})(?:\s+năm\s+(\d{4}))?(?:\s+lúc\s+(\d{1,2})(?::(\d{2}))?)?$/i);
+    if (vietnamese) {
+      const result = new Date(now);
+      result.setMonth(Number(vietnamese[2]) - 1, Number(vietnamese[1]));
+      if (vietnamese[3]) result.setFullYear(Number(vietnamese[3]));
+      if (vietnamese[4]) result.setHours(Number(vietnamese[4]), Number(vietnamese[5] || 0), 0, 0);
+      else result.setHours(0, 0, 0, 0);
+      if (!vietnamese[3] && result > now) result.setFullYear(result.getFullYear() - 1);
+      return result;
+    }
+
     const cleaned = text
-      .replace(/\bat\b.*$/i, "")
-      .replace(/\blúc\b.*$/i, "")
+      .replace(/\b(?:at|lúc)\b/gi, " ")
       .replace(/\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s*/i, "")
+      .replace(/\s+/g, " ")
       .trim();
     let parsed = new Date(cleaned);
     if (!Number.isNaN(parsed.getTime())) {
@@ -577,12 +618,20 @@
     };
   }
 
-  function findContentLink(article, postUrl) {
+  function findContentLink(article, postUrl, isRootArticle = false) {
     const own = getOwnArticleClone(article);
     const candidates = [...own.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')]
       .filter((link) => canonicalPostUrl(link.href) === postUrl);
+    const postLink = candidates.find((link) => !/(?:comment_id|reply_comment_id)=/i.test(link.href));
     const commentLink = candidates.find((link) => /(?:comment_id|reply_comment_id)=/i.test(link.href));
-    const link = commentLink || candidates.find((candidate) => canonicalContentUrl(candidate.href) === postUrl) || candidates[0];
+
+    // A root article can contain permalink links belonging to its comments.
+    // Its own content URL must always remain the post permalink.
+    if (isRootArticle && postLink) {
+      return { url: canonicalContentUrl(postLink.href) || postUrl, sourceType: "post" };
+    }
+
+    const link = commentLink || postLink || candidates[0];
     if (!link) return { url: postUrl, sourceType: "post" };
     const url = canonicalContentUrl(link.href) || postUrl;
     const sourceType = /reply_comment_id=/i.test(link.href)
@@ -597,9 +646,17 @@
     const own = getOwnArticleClone(article);
     const candidates = [...own.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')]
       .filter((link) => canonicalPostUrl(link.href) === postUrl)
-      .map((link) => normalizeSpace(link.textContent || link.getAttribute("aria-label")))
+      .flatMap((link) => [
+        link.getAttribute("aria-label"),
+        link.getAttribute("title"),
+        link.getAttribute("data-tooltip-content"),
+        link.textContent,
+      ].map(normalizeSpace))
       .filter(Boolean);
-    const timeText = candidates.find((value) => TIME_TEXT_PATTERN.test(value));
+    const timeText = candidates.find((value) => {
+      TIME_TEXT_PATTERN.lastIndex = 0;
+      return TIME_TEXT_PATTERN.test(value) || Boolean(parseFacebookTime(value));
+    });
     if (timeText) return timeText;
 
     const raw = normalizeSpace(own.innerText);
@@ -630,8 +687,8 @@
   }
 
   function inferSourceType(isRootArticle, contentLinkType, articleDepth) {
-    if (isRootArticle) return "post";
     if (contentLinkType && contentLinkType !== "post") return contentLinkType;
+    if (isRootArticle) return "post";
     return articleDepth >= 2 ? "reply" : "comment";
   }
 
@@ -647,12 +704,12 @@
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];
       for (const article of uniqueArticles) {
-        const contentLink = findContentLink(article, postUrl);
         const articleDepth = getArticleDepth(article, rootArticle);
         // Top-level Facebook articles are posts. A post article often contains
         // comment permalinks in its subtree, so basing this only on the first
         // link incorrectly turned every post into a comment.
         const isPost = article === rootArticle;
+        const contentLink = findContentLink(article, postUrl, isPost);
         const author = findAuthor(article);
         const timeText = findTimeText(article, postUrl);
         const rawText = getOwnArticleText(article);
@@ -660,14 +717,15 @@
         if (!text || text.length < 12) continue;
 
         const sourceType = inferSourceType(isPost, contentLink.sourceType, articleDepth);
-        const contentUrl = isPost ? postUrl : contentLink.url || postUrl;
+        const contentUrl = sourceType === "post" ? postUrl : contentLink.url || postUrl;
+        const parsedTime = parseFacebookTime(timeText);
         const qualityFlags = [];
         if (!author.name) qualityFlags.push("author_missing");
         if (author.isAnonymous) qualityFlags.push("anonymous_author");
         if (!timeText) qualityFlags.push("time_missing");
         if (hasFacebookChrome(rawText)) qualityFlags.push("ui_chrome_removed");
         if (/…\s*(?:Xem thêm|See more)/i.test(rawText)) qualityFlags.push("text_truncated");
-        if (!isPost && contentUrl === postUrl) qualityFlags.push("comment_permalink_missing");
+        if (sourceType !== "post" && contentUrl === postUrl) qualityFlags.push("comment_permalink_missing");
         const key = [contentUrl, sourceType, author.profileUrl || author.name, textFingerprint(text)].join("::");
         records.push({
           key,
@@ -676,9 +734,9 @@
           is_anonymous: author.isAnonymous,
           source_type: sourceType,
           post_url: postUrl,
-          comment_url: isPost ? "" : contentUrl,
-          published_at_text: timeText,
-          published_at: parseFacebookTime(timeText)?.toISOString() || "",
+          comment_url: sourceType === "post" ? "" : contentUrl,
+          published_at_text: parsedTime?.toISOString() || timeText,
+          published_at: parsedTime?.toISOString() || "",
           data_quality_flags: qualityFlags.join("; "),
           text,
         });
@@ -722,7 +780,9 @@
       return {
         group_name: groupContext.groupName || "",
         group_url: groupContext.groupUrl || "",
-        content_url: record.comment_url || record.post_url || "",
+        content_url: record.source_type === "post"
+          ? (record.post_url || "")
+          : (record.comment_url || record.post_url || ""),
         content_assessment: contentAssessment,
         published_at: record.published_at,
         procedure: analysis.procedures,
@@ -733,7 +793,7 @@
         source_type: record.source_type,
         post_url: record.post_url,
         comment_url: record.comment_url,
-        published_at_text: record.published_at_text,
+        published_at_text: record.published_at || record.published_at_text,
         doctor_or_clinic: analysis.doctorOrClinic,
         intent_score: analysis.intentScore,
         authenticity_score: analysis.authenticityScore,
@@ -756,8 +816,9 @@
   }
 
   function downloadCsv(rows, filename) {
-    if (!rows.length) return;
-    const headers = CSV_HEADERS.filter((header) => Object.prototype.hasOwnProperty.call(rows[0], header));
+    // Luôn tải cả file rỗng chỉ có header. Như vậy group không có dòng mới
+    // vẫn có bằng chứng output và không bị nhầm với group chưa chạy.
+    const headers = CSV_HEADERS;
     const csv = "\uFEFF" + [
       headers.map(csvEscape).join(","),
       ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
@@ -823,7 +884,11 @@
       /xem thêm bình luận/i, /xem \d+ câu trả lời/i,
       /^see more$/i, /^xem thêm$/i,
     ];
-    const buttons = [...document.querySelectorAll('div[role="article"] button')]
+    const buttons = [...new Set([
+      ...document.querySelectorAll('div[role="article"] button'),
+      ...document.querySelectorAll('div[role="article"] [role="button"]'),
+      ...document.querySelectorAll('div[role="article"] [role="link"]'),
+    ])]
       .filter((button) => {
         const label = normalizeSpace(button.innerText || button.getAttribute("aria-label"));
         return labels.some((pattern) => pattern.test(label));
@@ -911,12 +976,21 @@
     // login wall, DOM chưa tải hoặc Facebook thay đổi giao diện), để lần sau
     // vẫn quét lại khoảng thời gian chưa chắc đã đọc được.
     const checkpointSaved = completedNaturally && records.size > 0 && writeCheckpoint(groupUrl, scanStartedAt);
+    const runStatus = state.stopped
+      ? "stopped"
+      : records.size === 0
+        ? "no_records_seen"
+        : classified.length === 0
+          ? "zero_result_after_checkpoint"
+          : "completed_with_rows";
     hud.update("Đã hoàn tất phân loại.", classified);
     const checkpointMessage = checkpointSaved
       ? " Đã lưu checkpoint."
       : state.stopped
         ? " Chưa cập nhật checkpoint vì đã dừng thủ công."
-        : " Chưa cập nhật checkpoint vì chưa đọc được bản ghi.";
+        : records.size === 0
+          ? " Chưa cập nhật checkpoint vì chưa đọc được bản ghi."
+          : " Không có dòng sau khi lọc theo checkpoint.";
     hud.finish(`Đã xuất ${leads.length} lead và ${audit.length} dòng audit.${checkpointMessage}`);
 
     const result = {
@@ -926,6 +1000,7 @@
       cutoff,
       scanStartedAt,
       checkpoint: checkpointSaved ? scanStartedAt : previousCheckpoint,
+      runStatus,
     };
 
     if (typeof globalThis !== "undefined") {
@@ -936,10 +1011,13 @@
         previous_checkpoint: previousCheckpoint ? previousCheckpoint.toISOString() : null,
         checkpoint: result.checkpoint ? new Date(result.checkpoint).toISOString() : null,
         checkpoint_saved: checkpointSaved,
+        run_status: runStatus,
         records_seen: records.size,
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
+        lead_filename: leadFilename,
+        audit_filename: auditFilename,
       };
     }
 

@@ -24,8 +24,8 @@ Từ đợt quét tiếp theo, dùng `fb-group-lead-pilot.js` đã được tinh
 ## 3. Cách sử dụng
 
 1. Mở file CSV bằng Excel hoặc Google Sheets.
-2. Với file của đợt mới, xem trước các cột `group_name`, `content_url`, `content_assessment`, `published_at`, `procedure`, `name`, `is_anonymous`, `data_quality_flags`. File gốc ngày 2026-10-06 không có `data_quality_flags`, vì đây là cột được thêm cho lần quét mới.
-3. Ưu tiên kiểm tra các dòng có `segment` là `potential_customer` hoặc `experienced_customer`.
+2. Với file pilot của đợt mới, xem trước 8 cột `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`.
+3. Phân biệt lead và audit bằng tên file; các điểm số/phân loại là dữ liệu nội bộ, không nằm trong schema 8 cột này.
 4. Mở `content_url` để kiểm duyệt thủ công nội dung và bối cảnh.
 5. Đánh dấu trạng thái nội bộ như `approved`, `needs_review` hoặc `reject` trong một bản sao làm việc.
 
@@ -33,12 +33,10 @@ Không tự động liên hệ, thu thập email/số điện thoại hoặc m�
 
 ## 4. Ý nghĩa điểm số
 
-- `intent_score`: mức độ thể hiện ý định sử dụng dịch vụ.
-- `authenticity_score`: mức độ giống trải nghiệm thật.
-- `seeding_risk`: rủi ro nội dung quảng cáo/seeding.
-- `data_quality_flags`: cờ như `ui_chrome_removed`, `text_truncated`, `anonymous_author` hoặc `comment_permalink_missing`.
+- `published_at_text`: ISO timestamp khi phân giải được từ nhãn thời gian Facebook; không dùng trực tiếp text tương đối như `1 tuần` để đối chiếu ngày.
+- `source_type`: `post`, `comment` hoặc `reply`; `content_url` của `post` luôn là permalink bài viết, còn comment/reply dùng permalink riêng nếu Facebook cung cấp.
 
-Ngưỡng chọn lead hiện tại: `intent_score >= 45` và `seeding_risk <= 59`.
+Ngưỡng chọn lead hiện tại (dùng nội bộ trước khi chia file): `intent_score >= 45` và `seeding_risk <= 59`.
 
 ## 5. Chạy đợt mới
 

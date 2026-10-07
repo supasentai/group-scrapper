@@ -7,6 +7,7 @@
  *   node checkpoint-tools.js get <group-url>
  *   node checkpoint-tools.js register <group-url> [group-name]
  *   node checkpoint-tools.js set <group-url> <iso-timestamp> [group-name]
+ *   node checkpoint-tools.js record-run <group-url> <status> <scan-started-at> <records-seen> <classified-count> <leads-count> <audit-count> [group-name]
  *   node checkpoint-tools.js export-map
  */
 const fs = require("fs");
@@ -49,8 +50,13 @@ function assertIso(value) {
   return date.toISOString();
 }
 
+function assertNonNegativeInteger(value, label) {
+  if (!/^\d+$/.test(String(value || ""))) throw new Error(`${label} phải là số nguyên không âm: ${value}`);
+  return Number(value);
+}
+
 function usage() {
-  console.error("Usage: node checkpoint-tools.js init|list|get|set|export-map ...");
+  console.error("Usage: node checkpoint-tools.js init|list|get|set|record-run|export-map ...");
   process.exitCode = 2;
 }
 
@@ -88,6 +94,31 @@ try {
       group_url: url,
       group_name: args.slice(2).join(" ") || manifest.groups[url]?.group_name || "",
       checkpoint: timestamp,
+    };
+    writeManifest(manifest);
+    console.log(JSON.stringify(manifest.groups[url], null, 2));
+  } else if (command === "record-run") {
+    if (args.length < 7) throw new Error("Thiếu group URL, trạng thái hoặc thống kê lượt chạy");
+    const url = canonicalGroupUrl(args[0]);
+    const allowedStatuses = new Set(["completed_with_rows", "zero_result_after_checkpoint", "no_records_seen", "stopped"]);
+    if (!allowedStatuses.has(args[1])) throw new Error(`Trạng thái lượt chạy không hợp lệ: ${args[1]}`);
+    const scanStartedAt = assertIso(args[2]);
+    const manifest = readManifest();
+    const current = manifest.groups[url] || {};
+    manifest.groups[url] = {
+      ...current,
+      group_url: url,
+      group_name: args.slice(7).join(" ") || current.group_name || "",
+      checkpoint: current.checkpoint || null,
+      last_run: {
+        status: args[1],
+        scan_started_at: scanStartedAt,
+        records_seen: assertNonNegativeInteger(args[3], "records_seen"),
+        classified_count: assertNonNegativeInteger(args[4], "classified_count"),
+        leads_count: assertNonNegativeInteger(args[5], "leads_count"),
+        audit_count: assertNonNegativeInteger(args[6], "audit_count"),
+        recorded_at: new Date().toISOString(),
+      },
     };
     writeManifest(manifest);
     console.log(JSON.stringify(manifest.groups[url], null, 2));

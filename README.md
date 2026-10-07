@@ -7,6 +7,19 @@ Công cụ pilot 30 ngày để phát hiện hai nhóm người dùng trong bài
 
 Các trường hợp nghi seeding và nội dung không đủ tín hiệu được xuất sang file audit để kiểm duyệt, không bị trộn vào danh sách lead.
 
+## Điều phối multi-agent
+
+Quy trình giao việc, phạm vi của 4 worker và format handoff được ghi trong [ORCHESTRATION.md](ORCHESTRATION.md). Chat Orchestrator là đầu mối nhận kết quả từ các session, chuyển output sang QA/Evaluator và chỉ cho phép release sau khi các gate đạt.
+
+Bốn vai trò hiện tại:
+
+- Script Engineer: sửa crawler, checkpoint và test.
+- Browser Collector: chạy scan, lưu CSV và trạng thái từng group.
+- Output QA: kiểm tra độc lập chất lượng output, chỉ đọc.
+- Classifier Evaluator: đánh giá false positive/false negative, chỉ đề xuất.
+
+Các session dùng chung project local nên phân quyền hiện tại là quy ước vận hành theo role; không để nhiều agent cùng sửa một file. Chỉ Orchestrator điều phối commit/push.
+
 ## Dữ liệu được lấy
 
 Công cụ chỉ đọc nội dung Facebook đã tải và hiển thị trong tab hiện tại:
@@ -22,7 +35,7 @@ Công cụ chỉ đọc nội dung Facebook đã tải và hiển thị trong ta
 - Một đoạn nội dung ngắn phục vụ kiểm duyệt.
 - Cờ chất lượng như `anonymous_author`, `ui_chrome_removed`, `text_truncated` hoặc `comment_permalink_missing`.
 
-Trong CSV, các cột chính được đặt ở đầu theo thứ tự: `group_name`, `group_url`, `content_url`, `content_assessment`, `published_at`, `procedure`, `doctor_name`. Các trường phân tích và nội dung chi tiết nằm ở cuối. CSV không có cột `captured_at`.
+CSV pilot cố định 8 cột theo thứ tự: `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`. Các điểm số và trường phân loại vẫn được dùng nội bộ để chia file `leads`/`audit`, nhưng không xuất thêm cột. `published_at_text` được ghi thành ISO timestamp khi Facebook cung cấp đủ thông tin; nếu không phân giải được thì giữ text gốc để tránh đoán sai ngày.
 
 Công cụ không mở từng profile, không tìm email/số điện thoại và không gọi endpoint nội bộ của Facebook.
 
@@ -61,17 +74,21 @@ node .\checkpoint-tools.js list
 node .\checkpoint-tools.js get "https://www.facebook.com/groups/<group-id>/"
 node .\checkpoint-tools.js register "https://www.facebook.com/groups/<group-id>/" "Tên group"
 node .\checkpoint-tools.js set "https://www.facebook.com/groups/<group-id>/" "2026-10-07T01:39:00.000Z" "Tên group"
+node .\checkpoint-tools.js record-run "https://www.facebook.com/groups/<group-id>/" "zero_result_after_checkpoint" "2026-10-07T01:39:00.000Z" 120 0 0 0 "Tên group"
 node .\checkpoint-tools.js export-map
 ```
 
 - Trước khi dán script vào Console, agent đọc `checkpoints.json` và inject toàn bộ map (kể cả giá trị `null`) vào `window.__FB_GROUP_CHECKPOINTS__`. Khi đó file là nguồn chính; một key có giá trị `null` sẽ không bị checkpoint cũ trong `localStorage` ghi đè.
 - Sau khi script hoàn tất, agent đọc `window.__FB_GROUP_LEAD_PILOT_LAST_RUN__`. Chỉ khi `checkpoint_saved=true` mới ghi checkpoint vào manifest.
+- Agent ghi lại cả trạng thái lượt chạy bằng `checkpoint-tools.js record-run`. Trạng thái `zero_result_after_checkpoint` nghĩa là đã quét nhưng không có dòng mới; trạng thái `no_records_seen` nghĩa là DOM không trả về bản ghi và không được tiến checkpoint.
 - Đổi profile hoặc xóa dữ liệu site không còn làm mất checkpoint chính trong dự án, nhưng vẫn có thể làm mất fallback `localStorage`.
 
 Khi hoàn thành, trình duyệt tải hai file:
 
 - `fb_group_leads_<days>d_*.csv`: các lead đạt ngưỡng, kể cả tài khoản ẩn danh nếu nội dung đủ tín hiệu.
 - `fb_group_audit_<days>d_*.csv`: seeding, nhiễu và các dòng có danh tính cần xem lại.
+
+Kể cả khi một nhóm không có dòng mới, script vẫn tải file CSV chỉ có header. Vì vậy có thể phân biệt nhóm đã quét nhưng `zero result` với nhóm chưa chạy.
 
 ## Chạy kiểm thử bộ phân loại
 
