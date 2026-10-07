@@ -62,7 +62,7 @@ Lưu ý: phiên bản hiện tại chưa tự đọc spreadsheet, tự chuyển 
 
 - Lần quét đầu tiên dùng `days` (mặc định 30 ngày).
 - Checkpoint chính được lưu trong `checkpoints.json` ở thư mục dự án; `localStorage` của Edge chỉ còn là cơ chế dự phòng cho các lượt chạy cũ.
-- Sau mỗi lượt quét hoàn tất tự nhiên, agent phải ghi `scan_started_at` vào manifest bằng `checkpoint-tools.js`.
+- Sau mỗi lượt quét hoàn tất tự nhiên, agent phải ghi `scan_started_at` vào checkpoint manifest bằng `checkpoint-tools.js`.
 - Lần quét kế tiếp chỉ giữ nội dung có thời gian từ checkpoint đó trở đi. Ví dụ lần trước bắt đầu lúc 09:00 thì lần sau quét từ 09:00 trở đi.
 - Nếu bấm **Dừng & xuất CSV**, checkpoint không được cập nhật để tránh bỏ sót dữ liệu.
 - Nếu trang không trả về bản ghi nào, checkpoint cũng không được cập nhật để tránh tiến mốc khi Facebook chưa tải nội dung hoặc đã thay đổi DOM.
@@ -83,12 +83,23 @@ node .\checkpoint-tools.js export-map
 - Agent ghi lại cả trạng thái lượt chạy bằng `checkpoint-tools.js record-run`. Trạng thái `zero_result_after_checkpoint` nghĩa là đã quét nhưng không có dòng mới; trạng thái `no_records_seen` nghĩa là DOM không trả về bản ghi và không được tiến checkpoint.
 - Đổi profile hoặc xóa dữ liệu site không còn làm mất checkpoint chính trong dự án, nhưng vẫn có thể làm mất fallback `localStorage`.
 
-Khi hoàn thành, trình duyệt tải một file scan:
+Khi hoàn thành, trình duyệt tải một file scan và manifest tương ứng:
 
 - `fb_group_scan_<days>d_*.csv`: toàn bộ dòng raw/all của một group, kể cả dòng sẽ được đưa vào audit.
+- `fb_group_scan_<days>d_*.manifest.json`: metadata ISO UTC của cùng lượt chạy (`group_url`, `group_name`, `run_id`, thời gian, `row_count`, `status`, `output_file`). Lượt không có dòng dùng `status=zero_result`.
 - `merge-results.js`: bước downstream tùy chọn để tạo `repaired_all`, `repaired_leads`, `repaired_audit` và `quality_report`.
 
 Kể cả khi một nhóm không có dòng mới, script vẫn tải file scan chỉ có header. Vì vậy có thể phân biệt nhóm đã quét nhưng `zero result` với nhóm chưa chạy.
+
+## Nhập file tải xuống
+
+Sau khi tải xong cả CSV và manifest, chạy ingestion từ thư mục Downloads (hoặc path khác):
+
+```powershell
+node .\ingest-downloads.js "C:\Users\<user>\Downloads" .\results
+```
+
+Ingestion chỉ nhận cặp `fb_group_scan_*.csv` + manifest tương ứng, kiểm tra đúng 8 field trên từng dòng, `row_count` và khớp `group_url`/`group_name`, bỏ qua file thiếu manifest hoặc còn đuôi tải tạm, rồi copy không phá hủy vào `results\<run_id>\raw`. Chạy lại cùng nguồn là idempotent; kết quả được ghi ở `results\ingestion_report.json` và từng run có `ingestion_report.json` riêng.
 
 ## Chạy kiểm thử bộ phân loại
 

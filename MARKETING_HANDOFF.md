@@ -44,8 +44,9 @@ Ngưỡng chọn lead hiện tại (dùng nội bộ trước khi chia file): `i
 2. Mở từng link group trong tab Facebook riêng.
 3. Vào **Thảo luận** và chọn **Bài viết mới** nếu có.
 4. Chạy `fb-group-lead-pilot.js` trong Developer Tools Console.
-5. Chờ tải file scan raw, đổi tên theo group và lưu lại nguồn.
-6. Nếu có nhiều file nguồn cần gộp, chạy `node .\merge-results.js .\results\30d_YYYYMMDD 30`. Lệnh này chỉ áp dụng cho đợt mới và không sửa các CSV nguồn. Với đợt 365 ngày, dùng thư mục và tham số `365` tương ứng.
+5. Chờ tải file scan raw và manifest JSON tương ứng, đổi tên theo group nếu cần và lưu cả hai file nguồn.
+6. Nhập cặp file từ Downloads bằng `node .\ingest-downloads.js "C:\Users\<user>\Downloads" .\results`. Dữ liệu được copy không phá hủy vào `results\<run_id>\raw`; chạy lại cùng nguồn không tạo bản sao xử lý mới.
+7. Nếu có nhiều file nguồn cần gộp, chạy `node .\merge-results.js .\results\<run_id>\raw 30`. Lệnh này chỉ áp dụng cho đợt mới và không sửa các CSV nguồn. Với đợt 365 ngày, dùng tham số `365` tương ứng.
 
 Chỉ mở rộng phạm vi lên 365 ngày sau khi đã kiểm duyệt tối thiểu 100 dòng pilot.
 

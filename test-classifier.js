@@ -19,7 +19,32 @@ assert.deepEqual(pilot.CSV_HEADERS, [
 ]);
 assert.equal(pilot.isLikelyUiGroupHeading("Thông báo"), true);
 assert.equal(pilot.isLikelyUiGroupHeading("Facelift Support Group"), false);
+assert.equal(pilot.isLikelyMemberCount("34,3K thành viên"), true);
+assert.equal(pilot.isLikelyMemberCount("34,3K members"), true);
+assert.equal(pilot.isLikelyMemberCount("Face | Neck Support Group"), false);
+assert.equal(pilot.isLikelyPostTitle("deep plane facelift support group | Has anyone gotten a quote from Dr"), true);
+assert.equal(pilot.isLikelyPostTitle("Face | Neck Support Group"), false);
+assert.equal(pilot.isExactGroupLink("https://www.facebook.com/groups/123/", "https://www.facebook.com/groups/123/"), true);
+assert.equal(pilot.isExactGroupLink("https://www.facebook.com/groups/123/posts/456/", "https://www.facebook.com/groups/123/"), false);
+assert.equal(
+  pilot.isPostInGroup(
+    "https://www.facebook.com/groups/surgeryinturkiye/posts/2073705449939070/?comment_id=2074653926510889",
+    "https://www.facebook.com/groups/1052731386791309/",
+  ),
+  false,
+);
+assert.equal(
+  pilot.isPostInGroup(
+    "https://www.facebook.com/groups/1052731386791309/posts/2073705449939070/",
+    "https://www.facebook.com/groups/1052731386791309/",
+  ),
+  true,
+);
 assert.equal(pilot.makeScanFilename(30, 1234), "fb_group_scan_30d_1234.csv");
+assert.equal(pilot.manifestStatusForRun("completed_with_rows", 3), "completed");
+assert.equal(pilot.manifestStatusForRun("zero_result_after_checkpoint", 0), "zero_result");
+assert.equal(pilot.manifestStatusForRun("stopped", 0), "zero_result");
+assert.equal(pilot.manifestStatusForRun("stopped", 3), "stopped");
 const previousDocument = global.document;
 const previousLocation = global.location;
 try {
@@ -29,12 +54,30 @@ try {
     pathname: "/groups/123/",
   };
   global.document = {
-    title: "Thông báo | Facebook",
-    querySelectorAll: () => [{ textContent: "Thông báo" }],
-    querySelector: () => ({ getAttribute: () => "Actual Group" }),
+    title: "deep plane facelift support group | Has anyone gotten a quote from Dr | Facebook",
+    querySelectorAll: (selector) => selector === "a[href]"
+      ? [
+        {
+          href: "https://www.facebook.com/groups/123/posts/456/",
+          textContent: "Some post content",
+          getAttribute: (name) => name === "href" ? "/groups/123/posts/456/" : null,
+        },
+        {
+          href: "https://www.facebook.com/groups/123/",
+          textContent: "34,3K thành viên",
+          getAttribute: (name) => name === "href" ? "/groups/123/" : null,
+        },
+        {
+          href: "https://www.facebook.com/groups/123/",
+          textContent: "Face | Neck Support Group",
+          getAttribute: (name) => name === "href" ? "/groups/123/" : null,
+        },
+      ]
+      : [{ textContent: "Thông báo" }],
+    querySelector: () => ({ getAttribute: () => "deep plane facelift support group | Has anyone gotten a quote from Dr" }),
   };
   assert.deepEqual(pilot.getGroupContext(), {
-    groupName: "Actual Group",
+    groupName: "Face | Neck Support Group",
     groupUrl: "https://www.facebook.com/groups/123/",
   });
 } finally {
@@ -130,6 +173,10 @@ assert.equal(
   pilot.cleanSourceText("Maria Carlsson\nI had a facelift\n… Xem thêm\nTrả lời", "Maria Carlsson", ""),
   "I had a facelift",
 );
+assert.equal(pilot.cleanSourceText("· Theo dõi I am considering a facelift", "", ""), "I am considering a facelift");
+assert.equal(pilot.cleanSourceText("· Đang theo dõi I had a facelift", "", ""), "I had a facelift");
+assert.equal(pilot.cleanSourceText("· Following I need a surgeon", "", ""), "I need a surgeon");
+assert.equal(pilot.cleanSourceText("· Theo dõiThisI had a facelift", "", ""), "ThisI had a facelift");
 assert.deepEqual(pilot.detectProcedures("I had a brow lift, lower bleph and a mommy makeover."), [
   "brow_lift",
   "eyelid",

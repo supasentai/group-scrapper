@@ -39,6 +39,7 @@ Không được tự sửa CSV trong `results/`, tự đổi threshold hoặc pu
 
 - Chạy script trên các group được giao.
 - Lưu một file `scan` raw/all theo đúng schema 8 cột; không tự chia `leads`/`audit` ở bước thu thập.
+- Lưu thêm manifest JSON tương ứng, dùng ISO UTC và có `run_id`, `row_count`, `status`, `output_file`.
 - Ghi checkpoint và trạng thái run.
 - Không sửa code, không chỉnh tay nội dung CSV, không loại dòng để làm đẹp số liệu.
 
@@ -62,12 +63,13 @@ Chỉ đọc output và classifier. Lấy mẫu độc lập, đánh nhãn đún
 
 1. Orchestrator đọc `checkpoints.json`, xác định danh sách group và tạo task.
 2. Gửi task cho Script Engineer và Browser Collector nếu cần chạy song song.
-3. Browser Collector trả về file scan raw, số dòng, group đã xử lý và `run_status`.
-4. Orchestrator chuyển output cho Output QA và Classifier Evaluator.
-5. Nếu QA fail, Orchestrator gửi lỗi có bằng chứng cho Script Engineer; không sửa trực tiếp ở QA.
-6. Nếu classifier có false positive/false negative đáng kể, Evaluator chỉ đề xuất; Orchestrator quyết định có tạo task sửa hay không.
-7. Orchestrator chạy lại test, kiểm tra diff và tổng hợp báo cáo.
-8. Chỉ sau khi tất cả gate pass, Release Agent/Orchestrator mới commit và push.
+3. Browser Collector trả về cặp file scan raw/manifest, số dòng, group đã xử lý và `run_status`.
+4. Orchestrator chạy `node .\ingest-downloads.js <downloads-dir> .\results` để đưa dữ liệu vào `results\<run_id>\raw`; ingestion không xóa file nguồn và có idempotency.
+5. Orchestrator chuyển output cho Output QA và Classifier Evaluator.
+6. Nếu QA fail, Orchestrator gửi lỗi có bằng chứng cho Script Engineer; không sửa trực tiếp ở QA.
+7. Nếu classifier có false positive/false negative đáng kể, Evaluator chỉ đề xuất; Orchestrator quyết định có tạo task sửa hay không.
+8. Orchestrator chạy lại test, kiểm tra diff và tổng hợp báo cáo.
+9. Chỉ sau khi tất cả gate pass, Release Agent/Orchestrator mới commit và push.
 
 ## Trạng thái run bắt buộc
 
@@ -88,6 +90,8 @@ node .\checkpoint-tools.js record-run `
 ```
 
 File scan vẫn phải được tải kể cả khi chỉ có header. Không có file không được xem là `zero result`; đó là trạng thái chưa xác định. Việc chia `leads`/`audit` chỉ thực hiện ở bước merge/QA downstream.
+
+Manifest có `status=zero_result` khi lượt chạy không có dòng; `status=completed` khi có dữ liệu hoàn tất. Lượt bị dừng thủ công có dữ liệu partial dùng `status=stopped` và không được ingestion nhận; lượt dừng khi chỉ có header vẫn là `zero_result`.
 
 ## Format báo cáo handoff
 

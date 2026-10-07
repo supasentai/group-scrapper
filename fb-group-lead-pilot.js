@@ -17,7 +17,8 @@
 
   root.FBGroupLeadPilot = api;
   try {
-    const runPromise = api.run();
+    const bootstrapOptions = root.__FB_GROUP_LEAD_PILOT_OPTIONS__ || {};
+    const runPromise = api.run(bootstrapOptions);
     // Expose a small promise handle so the runner can read the final
     // checkpoint metadata without scraping the HUD text.
     root.__FB_GROUP_LEAD_PILOT_RUN__ = runPromise;
@@ -36,6 +37,8 @@
     scrollIntervalMs: 2200,
     maxIdleRounds: 12,
     maxOldPostRounds: 6,
+    maxRounds: 0,
+    maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
     minimumIntentScore: 45,
     maximumSeedingRisk: 59,
@@ -180,6 +183,15 @@
     return UI_GROUP_HEADINGS.has(normalizeSpace(value).toLowerCase());
   }
 
+  function isLikelyMemberCount(value) {
+    return /^\d[\d.,]*\s*[KMB]?\s*(?:thành viên|members?)$/i.test(normalizeSpace(value));
+  }
+
+  function isLikelyPostTitle(value) {
+    const text = normalizeSpace(value);
+    return /\?|\b(?:has anyone|anyone got|anyone had|looking for|recommend(?:ation)?|quote from|how much|what price)\b/i.test(text);
+  }
+
   function escapeRegExp(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -248,15 +260,33 @@
     }
   }
 
+  function isPostInGroup(postUrl, groupUrl) {
+    const postGroup = canonicalGroupUrl(postUrl);
+    const targetGroup = canonicalGroupUrl(groupUrl);
+    return Boolean(postGroup && targetGroup && postGroup === targetGroup);
+  }
+
+  function isExactGroupLink(rawUrl, groupUrl) {
+    if (!isPostInGroup(rawUrl, groupUrl)) return false;
+    try {
+      const url = new URL(rawUrl, "https://www.facebook.com");
+      return /^\/groups\/[^/]+\/?$/i.test(url.pathname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function getGroupContext() {
     if (typeof document === "undefined") return { groupName: "", groupUrl: "" };
     const groupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
-    const heading = [...document.querySelectorAll("h1")]
+    const groupLinkNames = [...document.querySelectorAll("a[href]")]
+      .filter((link) => isExactGroupLink(link.href || link.getAttribute("href"), groupUrl))
+      .map((link) => normalizeSpace(link.getAttribute("aria-label") || link.textContent))
+      .filter((value) => value && !isLikelyUiGroupHeading(value) && !isLikelyMemberCount(value) && !isLikelyPostTitle(value));
+    const headingNames = [...document.querySelectorAll("h1")]
       .map((node) => normalizeSpace(node.textContent))
-      .find((value) => value && !isLikelyUiGroupHeading(value));
-    const ogTitle = normalizeSpace(document.querySelector('meta[property="og:title"]')?.getAttribute("content"));
-    const title = normalizeSpace(document.title).replace(/\s*[|·-]\s*Facebook.*$/i, "");
-    const candidates = [heading, ogTitle, title].filter((value) => value && !isLikelyUiGroupHeading(value));
+      .filter((value) => value && !isLikelyUiGroupHeading(value) && !isLikelyMemberCount(value) && !isLikelyPostTitle(value));
+    const candidates = [...groupLinkNames, ...headingNames];
     return { groupName: candidates[0] || "", groupUrl };
   }
 
@@ -380,7 +410,8 @@
     }
     cleaned = cleaned
       .replace(/^(?:Chuyên gia trong nhóm|Group expert|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor)\s*(?:[·•]\s*(?:Theo dõi|Follow))?\s*/i, "")
-      .replace(/^[·•]\s*(?:Theo dõi|Follow)\s*/i, "")
+      .replace(/^[·•]\s*(?:Theo dõi|Đang theo dõi|Follow(?:ing)?)\s*/i, "")
+      .replace(/^(?:Theo dõi|Đang theo dõi|Follow(?:ing)?)\s*[·•]?\s*/i, "")
       .replace(INLINE_ACTION_PATTERN, " ")
       .replace(INLINE_CHROME_PATTERN, " ")
       .replace(/\b(?:Edited|Đã chỉnh sửa)\b/gi, "")
@@ -727,12 +758,13 @@
 
   function collectRenderedRecords() {
     const records = [];
+    const currentGroupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
     for (const rootArticle of getTopLevelArticles()) {
       const rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
       const postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
       const fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
       const postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
-      if (!postUrl) continue;
+      if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];
@@ -860,11 +892,55 @@
     return `fb_group_scan_${days}d_${runStamp}.csv`;
   }
 
+  function makeManifestFilename(scanFilename) {
+    return String(scanFilename || "").replace(/\.csv$/i, ".manifest.json");
+  }
+
+  function buildRunManifest({
+    groupUrl,
+    groupName,
+    runId,
+    startedAt,
+    completedAt,
+    rowCount,
+    status,
+    outputFile,
+  }) {
+    return {
+      group_url: groupUrl || "",
+      group_name: groupName || "",
+      run_id: runId,
+      started_at: new Date(startedAt).toISOString(),
+      completed_at: new Date(completedAt).toISOString(),
+      row_count: Number(rowCount),
+      status,
+      output_file: outputFile,
+    };
+  }
+
+  function manifestStatusForRun(runStatus, rowCount) {
+    if (Number(rowCount) === 0) return "zero_result";
+    return runStatus === "completed_with_rows" ? "completed" : "stopped";
+  }
+
   function downloadCsv(rows, filename) {
     // Luôn tải cả file rỗng chỉ có header. Như vậy group không có dòng mới
     // vẫn có bằng chứng output và không bị nhầm với group chưa chạy.
     const csv = buildCsv(rows);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const anchor = document.createElement("a");
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(anchor.href), 1_000);
+  }
+
+  function downloadJson(value, filename) {
+    const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], {
+      type: "application/json;charset=utf-8",
+    });
     const anchor = document.createElement("a");
     anchor.href = URL.createObjectURL(blob);
     anchor.download = filename;
@@ -957,8 +1033,10 @@
 
     const runStamp = Date.now();
     const scanFilename = options.scanFilename || makeScanFilename(CONFIG.days, runStamp);
+    const runId = options.runId || `scan_${CONFIG.days}d_${runStamp}`;
+    const manifestFilename = makeManifestFilename(scanFilename);
 
-    const state = { stopped: false };
+    const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
     const groupContext = getGroupContext();
@@ -971,9 +1049,16 @@
     let oldPostRounds = 0;
     let round = 0;
 
-    globalThis.STOP_FB_LEAD_PILOT = () => { state.stopped = true; };
+    globalThis.STOP_FB_LEAD_PILOT = () => {
+      state.stopped = true;
+      state.stopReason = "manual";
+    };
 
-    while (!state.stopped && idleRounds < CONFIG.maxIdleRounds && oldPostRounds < CONFIG.maxOldPostRounds) {
+    while (!state.stopped
+      && idleRounds < CONFIG.maxIdleRounds
+      && oldPostRounds < CONFIG.maxOldPostRounds
+      && (!CONFIG.maxRounds || round < CONFIG.maxRounds)
+      && (!CONFIG.maxRuntimeMs || Date.now() - scanStartedAt.getTime() < CONFIG.maxRuntimeMs)) {
       round += 1;
       await expandVisibleDiscussion();
       for (const record of collectRenderedRecords()) records.set(record.key, record);
@@ -982,13 +1067,12 @@
       const classified = classifyRecords(filterRecordsSince(allRecords, cutoff), groupContext);
       // Dùng toàn bộ dữ liệu đã thấy để biết lúc nào đã cuộn qua mốc checkpoint.
       // Nếu chỉ nhìn dữ liệu sau cutoff thì điều kiện này không bao giờ đúng.
-      const postDates = allRecords
-        .filter((record) => record.source_type === "post")
+      const recordDates = allRecords
         .map((record) => record.published_at
           ? new Date(record.published_at)
           : parseFacebookTime(record.published_at_text))
         .filter((date) => date && !Number.isNaN(date.getTime()));
-      const oldest = postDates.length ? new Date(Math.min(...postDates.map(Number))) : null;
+      const oldest = recordDates.length ? new Date(Math.min(...recordDates.map(Number))) : null;
       oldPostRounds = oldest && oldest < cutoff ? oldPostRounds + 1 : 0;
       hud.update(`Vòng ${round} · bài cũ nhất: ${oldest ? oldest.toLocaleDateString() : "chưa xác định"}`, classified);
 
@@ -998,6 +1082,15 @@
       const after = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
       idleRounds = after <= lastHeight ? idleRounds + 1 : 0;
       lastHeight = after;
+    }
+
+    const reachedHardLimit = !state.stopped && (
+      (CONFIG.maxRounds > 0 && round >= CONFIG.maxRounds)
+      || (CONFIG.maxRuntimeMs > 0 && Date.now() - scanStartedAt.getTime() >= CONFIG.maxRuntimeMs)
+    );
+    if (reachedHardLimit) {
+      state.stopped = true;
+      state.stopReason = "hard_limit";
     }
 
     for (const record of collectRenderedRecords()) records.set(record.key, record);
@@ -1028,10 +1121,22 @@
     const checkpointMessage = checkpointSaved
       ? " Đã lưu checkpoint."
       : state.stopped
-        ? " Chưa cập nhật checkpoint vì đã dừng thủ công."
+        ? ` Chưa cập nhật checkpoint vì đã dừng (${state.stopReason || "stopped"}).`
         : records.size === 0
           ? " Chưa cập nhật checkpoint vì chưa đọc được bản ghi."
           : " Không có dòng sau khi lọc theo checkpoint.";
+    const completedAt = new Date();
+    const manifestStatus = manifestStatusForRun(runStatus, classified.length);
+    const runManifest = buildRunManifest({
+      groupUrl,
+      groupName: groupContext.groupName,
+      runId,
+      startedAt: scanStartedAt,
+      completedAt,
+      rowCount: classified.length,
+      status: manifestStatus,
+      outputFile: scanFilename,
+    });
     hud.finish(`Đã xuất file scan raw với ${classified.length} dòng (${leads.length} lead nội bộ, ${audit.length} audit nội bộ).${checkpointMessage}`);
 
     const result = {
@@ -1040,9 +1145,14 @@
       all: classified,
       cutoff,
       scanStartedAt,
+      completedAt,
       checkpoint: checkpointSaved ? scanStartedAt : previousCheckpoint,
       runStatus,
+      runId,
+      manifest: runManifest,
     };
+
+    downloadJson(runManifest, manifestFilename);
 
     if (typeof globalThis !== "undefined") {
       globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__ = {
@@ -1053,11 +1163,13 @@
         checkpoint: result.checkpoint ? new Date(result.checkpoint).toISOString() : null,
         checkpoint_saved: checkpointSaved,
         run_status: runStatus,
+        run_id: runId,
         records_seen: records.size,
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
         scan_filename: scanFilename,
+        manifest_filename: manifestFilename,
       };
     }
 
@@ -1082,7 +1194,14 @@
     inferAuthorFromText,
     inferSourceType,
     isLikelyUiGroupHeading,
+    isLikelyMemberCount,
+    isLikelyPostTitle,
+    isPostInGroup,
+    isExactGroupLink,
+    buildRunManifest,
+    manifestStatusForRun,
     makeScanFilename,
+    makeManifestFilename,
     readCheckpoint,
     writeCheckpoint,
     normalizeProfileUrl,
