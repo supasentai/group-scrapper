@@ -160,6 +160,110 @@ try {
   );
   assert.equal(missingCsvOutcome.status, "failed");
   assert.match(missingCsvOutcome.error, /csv_missing/);
+
+  const resumeGroupsFile = path.join(tempDir, "resume-groups.csv");
+  fs.writeFileSync(resumeGroupsFile, [
+    "TÊN HỘI NHÓM,LINK",
+    "Completed Group,https://www.facebook.com/groups/resume-completed/",
+    "Zero Group,https://www.facebook.com/groups/resume-zero/",
+    "Stopped Group,https://www.facebook.com/groups/resume-stopped/",
+    "Failed Group,https://www.facebook.com/groups/resume-failed/",
+    "Duplicate Completed,https://www.facebook.com/groups/resume-completed/",
+    "New Group,https://www.facebook.com/groups/resume-new/",
+  ].join("\n"), "utf8");
+  const resumeManifestPath = path.join(tempDir, "resume-manifest.json");
+  fs.writeFileSync(resumeManifestPath, JSON.stringify({
+    batch_run_id: "batch_parent",
+    input_hash: "old-hash",
+    status: "completed_with_errors",
+    groups: [
+      { input_row: 2, group_name: "Completed Group", group_url: "https://www.facebook.com/groups/resume-completed/", run_id: "old-completed", status: "completed_with_rows", row_count: 1 },
+      { input_row: 3, group_name: "Zero Group", group_url: "https://www.facebook.com/groups/resume-zero/", run_id: "old-zero", status: "zero_result", row_count: 0 },
+      { input_row: 4, group_name: "Stopped Group", group_url: "https://www.facebook.com/groups/resume-stopped/", run_id: "old-stopped", status: "stopped", row_count: 0 },
+      { input_row: 5, group_name: "Failed Group", group_url: "https://www.facebook.com/groups/resume-failed/", run_id: null, status: "failed", row_count: null, error: "prior_failure" },
+      { input_row: 6, group_name: "Duplicate Completed", group_url: "https://www.facebook.com/groups/resume-completed/", run_id: null, status: "skipped_duplicate", row_count: null },
+    ],
+  }), "utf8");
+  const resumeConfig = batch.parseArgs([
+    "--groups-file", resumeGroupsFile,
+    "--results-dir", resultsDir,
+    "--resume-manifest", resumeManifestPath,
+    "--retry-status", "stopped,failed",
+  ]);
+  const resumeCalls = [];
+  const resumeRun = batch.runBatch(resumeConfig, {
+    runGroup: (group) => {
+      resumeCalls.push(group.group_url);
+      const suffix = group.group_url.split("/").at(-2);
+      const artifacts = writeArtifacts(`resume-${suffix}`, group.group_url, `new-${suffix}`, "completed", 1);
+      return { status: "completed", run_id: `new-${suffix}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+    },
+  });
+  assert.deepEqual(resumeCalls, [
+    "https://www.facebook.com/groups/resume-stopped/",
+    "https://www.facebook.com/groups/resume-failed/",
+    "https://www.facebook.com/groups/resume-new/",
+  ]);
+  assert.equal(resumeRun.parent_batch_run_id, "batch_parent");
+  assert.equal(resumeRun.resume_input_hash_match, false);
+  assert.deepEqual(resumeRun.retry_statuses, ["stopped", "failed"]);
+  assert.deepEqual(resumeRun.execution_counts, { reused: 3, retried: 2, new: 1 });
+  assert.equal(resumeRun.groups[0].status, "completed_with_rows");
+  assert.equal(resumeRun.groups[0].execution, "reused");
+  assert.equal(resumeRun.groups[0].run_id, "old-completed");
+  assert.equal(resumeRun.groups[1].status, "zero_result");
+  assert.equal(resumeRun.groups[1].execution, "reused");
+  assert.equal(resumeRun.groups[2].status, "completed_with_rows");
+  assert.equal(resumeRun.groups[2].execution, "retried");
+  assert.equal(resumeRun.groups[2].previous_run_id, "old-stopped");
+  assert.equal(resumeRun.groups[4].status, "skipped_duplicate");
+  assert.equal(resumeRun.groups[4].execution, "reused");
+  assert.equal(resumeRun.groups[5].execution, "new");
+
+  const noRetryConfig = batch.parseArgs([
+    "--groups-file", resumeGroupsFile,
+    "--results-dir", resultsDir,
+    "--resume-manifest", resumeManifestPath,
+  ]);
+  const noRetryCalls = [];
+  const noRetryRun = batch.runBatch(noRetryConfig, {
+    runGroup: (group) => {
+      noRetryCalls.push(group.group_url);
+      return { status: "zero_result", run_id: "new-only", files: {} };
+    },
+  });
+  assert.deepEqual(noRetryCalls, ["https://www.facebook.com/groups/resume-new/"]);
+  assert.equal(noRetryRun.groups[2].status, "stopped");
+  assert.equal(noRetryRun.groups[3].status, "failed");
+
+  const changedGroupsFile = path.join(tempDir, "changed-resume-groups.csv");
+  fs.writeFileSync(changedGroupsFile, "TÊN HỘI NHÓM,LINK\nCompleted Group,https://www.facebook.com/groups/changed-url/\n", "utf8");
+  assert.throws(() => batch.runBatch(batch.parseArgs([
+    "--groups-file", changedGroupsFile,
+    "--results-dir", resultsDir,
+    "--resume-manifest", resumeManifestPath,
+  ]), { runGroup: () => { throw new Error("must not run"); } }), /resume_input_mapping_mismatch/);
+
+  const needsManifestPath = path.join(tempDir, "needs-resume-manifest.json");
+  fs.writeFileSync(needsManifestPath, JSON.stringify({
+    batch_run_id: "batch_needs",
+    status: "needs_user_action",
+    groups: [{
+      input_row: 2,
+      group_name: "Completed Group",
+      group_url: "https://www.facebook.com/groups/resume-completed/",
+      run_id: null,
+      status: "needs_user_action",
+      row_count: null,
+      needs_user_action: "login required",
+    }],
+  }), "utf8");
+  const needsConfig = batch.parseArgs([
+    "--groups-file", resumeGroupsFile,
+    "--results-dir", resultsDir,
+    "--resume-manifest", needsManifestPath,
+  ]);
+  assert.throws(() => batch.runBatch(needsConfig, { runGroup: () => { throw new Error("must not run"); } }), /requires_explicit_retry_status/);
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }

@@ -123,6 +123,20 @@ node .\aggregate-results.js `
 
 Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi dùng lại `merge-results.js` để normalize/dedupe/classify. `zero_result` không tạo row trong master nhưng vẫn được tính; completed runs hợp lệ được đưa vào `all/leads/audit`; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
 
+### Batch Reliability Phase 4
+
+Batch resume phải dùng manifest trước đó và giữ nguyên mapping `input_row` + canonical `group_url`:
+
+```powershell
+node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results `
+  --resume-manifest .\results\batch_manifest_<previous>.json `
+  --retry-status stopped,failed
+```
+
+`completed_with_rows`, `zero_result` và `skipped_*` không bao giờ chạy lại. `failed`, `stopped`, `not_run` và `needs_user_action` chỉ chạy lại khi được liệt kê trong `--retry-status`; nếu manifest cũ có `needs_user_action` mà không có quyền retry rõ ràng, batch fail-safe và không chạy child nào. Login/CAPTCHA từ lượt mới vẫn dừng phần còn lại thành `not_run`. Manifest resume mới phải ghi `parent_batch_run_id`, action reuse/retry/new và execution counts.
+
+`cleanup-staging.js` chỉ xóa khi có `--apply`; mặc định là dry-run. Utility chỉ xét `.runner-staging-*` cũ hơn ngưỡng, bỏ qua directory đang hiện hành hoặc được tham chiếu trong artifact/report.
+
 ## Format báo cáo handoff
 
 Mỗi agent trả kết quả theo mẫu:

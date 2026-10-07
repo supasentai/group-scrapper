@@ -155,6 +155,27 @@ node .\aggregate-results.js `
 
 Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách. Kết quả gồm `fb_group_aggregate_all`, `leads`, `audit` và `aggregate_report` JSON/Markdown với group status, released/pending groups, source run IDs, số dòng raw/deduped/in-window, quality flags, anonymous và missing-profile counts.
 
+### Batch Reliability Phase 4
+
+Batch có thể resume bằng manifest trước đó. Các group `completed_with_rows`, `zero_result` và `skipped_*` luôn được reuse; chỉ retry khi nêu rõ trạng thái:
+
+```powershell
+node .\batch-runner.js `
+  --groups-file .\groups.csv `
+  --results-dir .\results `
+  --resume-manifest .\results\batch_manifest_<previous>.json `
+  --retry-status stopped,failed
+```
+
+Manifest mới ghi `parent_batch_run_id`, mapping input row/group URL, `execution_counts`, cùng `reused`/`retried`/`new` trên từng group. Input bị đổi mapping sẽ dừng an toàn; manifest có `needs_user_action` chỉ được retry khi ghi rõ `--retry-status needs_user_action`, và login/CAPTCHA vẫn chặn các group còn lại. Staging cleanup là dry-run mặc định:
+
+```powershell
+node .\cleanup-staging.js --results-dir .\results
+node .\cleanup-staging.js --results-dir .\results --older-than-ms 3600000 --apply
+```
+
+Chỉ staging directory cũ, không được tham chiếu và không còn hiện hành mới đủ điều kiện xóa.
+
 ## Chạy kiểm thử bộ phân loại
 
 ```powershell

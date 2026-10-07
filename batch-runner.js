@@ -21,6 +21,8 @@ function usage() {
     "  node batch-runner.js --groups-file <csv> --results-dir <dir> --days <n> [options]",
     "Options:",
     "  --groups-file <path>       Vietnamese group list CSV with TÊN HỘI NHÓM and LINK",
+    "  --resume-manifest <path>   Resume from a prior batch manifest",
+    "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action",
     "  --results-dir <path>       Results directory (default .\\results)",
     "  --days <n>                 Collector lookback days (default 30)",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
@@ -39,6 +41,15 @@ function parsePositiveInteger(value, flag, { allowZero = false } = {}) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || (!allowZero && number <= 0)) throw new Error(`${flag} is out of range`);
   return number;
+}
+
+function parseRetryStatuses(value) {
+  const allowed = new Set(["failed", "stopped", "not_run", "needs_user_action"]);
+  const statuses = [...new Set(String(value || "").split(",").map((status) => status.trim()).filter(Boolean))];
+  if (!statuses.length || statuses.some((status) => !allowed.has(status))) {
+    throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action");
+  }
+  return statuses;
 }
 
 function parseCsvRows(input) {
@@ -144,6 +155,8 @@ function parseJsonOutput(stdout) {
 function parseArgs(argv = process.argv.slice(2)) {
   const config = {
     groupsFile: "",
+    resumeManifest: "",
+    retryStatuses: [],
     resultsDir: DEFAULT_RESULTS_DIR,
     days: DEFAULT_DAYS,
     maxRounds: 0,
@@ -157,7 +170,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--groups-file", "--results-dir", "--days", "--max-rounds", "--max-runtime-ms",
+    "--groups-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--max-rounds", "--max-runtime-ms",
     "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint",
     "--profile-dir", "--download-timeout-ms",
   ]);
@@ -172,6 +185,8 @@ function parseArgs(argv = process.argv.slice(2)) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
     index += 1;
     if (flag === "--groups-file") config.groupsFile = path.resolve(value);
+    else if (flag === "--resume-manifest") config.resumeManifest = path.resolve(value);
+    else if (flag === "--retry-status") config.retryStatuses = [...new Set([...config.retryStatuses, ...parseRetryStatuses(value)])];
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
     else if (flag === "--max-rounds") config.maxRounds = parsePositiveInteger(value, flag, { allowZero: true });
@@ -212,6 +227,101 @@ function prepareEntries(parsed) {
     seen.set(groupUrl, entry.input_row);
     return { ...entry, group_url: groupUrl, status: "pending", error: null, run_id: null, row_count: null, needs_user_action: null };
   });
+}
+
+function readResumeManifest(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) throw new Error(`resume_manifest_not_found:${filePath}`);
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
+  } catch (error) {
+    throw new Error(`resume_manifest_invalid:${String(error.message || error)}`);
+  }
+  if (!manifest || !manifest.batch_run_id || !Array.isArray(manifest.groups)) {
+    throw new Error("resume_manifest_shape_invalid");
+  }
+  return manifest;
+}
+
+function resumeEntryKey(entry) {
+  return Number(entry?.input_row);
+}
+
+function isSkippedStatus(status) {
+  return /^(?:skipped_blank|skipped_invalid|skipped_duplicate)$/.test(String(status || ""));
+}
+
+function canonicalResumeUrl(value) {
+  try {
+    return browserRunner.validateGroupUrl(value);
+  } catch (_error) {
+    return String(value || "").trim();
+  }
+}
+
+function validateResumeMapping(groups, resumeManifest) {
+  const previous = new Map();
+  for (const entry of resumeManifest.groups) {
+    const key = resumeEntryKey(entry);
+    if (!Number.isSafeInteger(key) || key <= 0 || previous.has(key)) throw new Error("resume_manifest_input_row_mapping_invalid");
+    previous.set(key, entry);
+  }
+  const current = new Map(groups.map((entry) => [resumeEntryKey(entry), entry]));
+  const mismatches = [];
+  for (const entry of groups) {
+    const prior = previous.get(resumeEntryKey(entry));
+    if (!prior) continue;
+    if (canonicalResumeUrl(prior.group_url) !== canonicalResumeUrl(entry.group_url)) {
+      mismatches.push(`input_row_${entry.input_row}_group_url`);
+      continue;
+    }
+    if (isSkippedStatus(prior.status) !== isSkippedStatus(entry.status)) {
+      mismatches.push(`input_row_${entry.input_row}_status`);
+    }
+  }
+  for (const key of previous.keys()) {
+    if (!current.has(key)) mismatches.push(`missing_input_row_${key}`);
+  }
+  if (mismatches.length) throw new Error(`resume_input_mapping_mismatch:${mismatches.join(",")}`);
+  return previous;
+}
+
+function applyResumeState(groups, resumeManifest, retryStatuses) {
+  const previous = validateResumeMapping(groups, resumeManifest);
+  const retrySet = new Set(retryStatuses || []);
+  const hasNeedsUserAction = resumeManifest.status === "needs_user_action"
+    || resumeManifest.groups.some((entry) => entry.status === "needs_user_action");
+  if (hasNeedsUserAction && !retrySet.has("needs_user_action")) {
+    throw new Error("resume_needs_user_action_requires_explicit_retry_status");
+  }
+
+  for (const group of groups) {
+    const prior = previous.get(resumeEntryKey(group));
+    if (!prior) {
+      group.execution = "new";
+      group.previous_status = null;
+      group.previous_run_id = null;
+      continue;
+    }
+    group.previous_status = prior.status || null;
+    group.previous_run_id = prior.run_id || null;
+    if (retrySet.has(prior.status)) {
+      group.execution = "retried";
+      group.status = "pending";
+      group.error = null;
+      group.run_id = null;
+      group.row_count = null;
+      group.needs_user_action = null;
+      continue;
+    }
+    group.execution = "reused";
+    group.status = prior.status || group.status;
+    group.run_id = prior.run_id || null;
+    group.row_count = prior.row_count ?? null;
+    group.needs_user_action = prior.needs_user_action || null;
+    group.error = prior.error || null;
+  }
+  return groups;
 }
 
 function makeRunnerArgs(group, config) {
@@ -333,6 +443,15 @@ function countStatuses(groups) {
   return counts;
 }
 
+function countExecutions(groups) {
+  const counts = {};
+  for (const group of groups) {
+    const execution = group.execution || "new";
+    counts[execution] = (counts[execution] || 0) + 1;
+  }
+  return counts;
+}
+
 function batchManifestFilename(batchRunId) {
   return `batch_manifest_${batchRunId}.json`;
 }
@@ -343,6 +462,13 @@ function runBatch(config, dependencies = {}) {
   const parsed = parseGroupsCsv(inputBuffer.toString("utf8"));
   const groups = prepareEntries(parsed);
   const requestedGroupCount = groups.filter((group) => group.status === "pending").length;
+  for (const group of groups) {
+    group.execution = "new";
+    group.previous_status = null;
+    group.previous_run_id = null;
+  }
+  const resumeManifest = config.resumeManifest ? readResumeManifest(config.resumeManifest) : null;
+  if (resumeManifest) applyResumeState(groups, resumeManifest, config.retryStatuses);
   const runner = dependencies.runGroup || ((group) => invokeBrowserRunner(group, config));
   const startedAt = new Date();
   let blocked = false;
@@ -382,8 +508,13 @@ function runBatch(config, dependencies = {}) {
     header_row: parsed.header_row,
     input_row_count: groups.length,
     requested_group_count: requestedGroupCount,
+    parent_batch_run_id: resumeManifest?.batch_run_id || null,
+    resume_manifest_path: resumeManifest ? path.resolve(config.resumeManifest) : null,
+    resume_input_hash_match: resumeManifest ? resumeManifest.input_hash === sha256(inputBuffer) : null,
+    retry_statuses: config.retryStatuses || [],
     groups,
     counts,
+    execution_counts: countExecutions(groups),
   };
   fs.mkdirSync(config.resultsDir, { recursive: true });
   const manifestPath = path.join(config.resultsDir, batchManifestFilename(batchRunId));
@@ -415,10 +546,13 @@ module.exports = {
   invokeBrowserRunner,
   makeRunnerArgs,
   normalizeOutcome,
+  parseRetryStatuses,
   parseArgs,
   parseCsvRows,
   parseGroupsCsv,
   prepareEntries,
   runBatch,
+  readResumeManifest,
   sha256,
+  validateResumeMapping,
 };
