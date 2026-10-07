@@ -1,11 +1,24 @@
 {
   "version": 1,
-  "updated_at": "2026-10-07T03:21:12.485Z",
+  "updated_at": "2026-10-07T12:51:47.094Z",
   "groups": {
     "https://www.facebook.com/groups/957334833144318/": {
       "group_url": "https://www.facebook.com/groups/957334833144318/",
       "group_name": "Facelift and Necklift Question and Answer Group",
-      "checkpoint": "2026-10-07T02:44:16.846Z"
+      "checkpoint": "2026-10-07T12:51:32.989Z",
+      "last_run": {
+        "status": "zero_result_after_checkpoint",
+        "scan_started_at": "2026-10-07T12:51:32.989Z",
+        "completed_at": null,
+        "checkpoint_saved": true,
+        "checkpoint": "2026-10-07T12:51:32.989Z",
+        "run_id": "scan_3d_1791377492981",
+        "records_seen": 6,
+        "classified_count": 0,
+        "leads_count": 0,
+        "audit_count": 0,
+        "recorded_at": "2026-10-07T12:51:47.094Z"
+      }
     },
     "https://www.facebook.com/groups/1169438321907831/": {
       "group_url": "https://www.facebook.com/groups/1169438321907831/",
