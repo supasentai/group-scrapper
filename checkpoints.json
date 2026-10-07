@@ -1,124 +1,111 @@
 {
   "version": 1,
-  "updated_at": "2026-10-07T12:51:47.094Z",
+  "updated_at": "2026-10-07T03:20:00.000Z",
   "groups": {
     "https://www.facebook.com/groups/957334833144318/": {
       "group_url": "https://www.facebook.com/groups/957334833144318/",
       "group_name": "Facelift and Necklift Question and Answer Group",
-      "checkpoint": "2026-10-07T12:51:32.989Z",
-      "last_run": {
-        "status": "zero_result_after_checkpoint",
-        "scan_started_at": "2026-10-07T12:51:32.989Z",
-        "completed_at": null,
-        "checkpoint_saved": true,
-        "checkpoint": "2026-10-07T12:51:32.989Z",
-        "run_id": "scan_3d_1791377492981",
-        "records_seen": 6,
-        "classified_count": 0,
-        "leads_count": 0,
-        "audit_count": 0,
-        "recorded_at": "2026-10-07T12:51:47.094Z"
-      }
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1169438321907831/": {
       "group_url": "https://www.facebook.com/groups/1169438321907831/",
       "group_name": "Face-lift & Neck-lift Support Group",
-      "checkpoint": "2026-10-07T03:20:42.820Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1493584241802527/": {
       "group_url": "https://www.facebook.com/groups/1493584241802527/",
       "group_name": "Face lift and Neck Lift support group",
-      "checkpoint": "2026-10-07T02:45:27.362Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/473931468215531/": {
       "group_url": "https://www.facebook.com/groups/473931468215531/",
       "group_name": "Blepharoplasty Support Group",
-      "checkpoint": "2026-10-07T02:45:48.893Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1052731386791309/": {
       "group_url": "https://www.facebook.com/groups/1052731386791309/",
       "group_name": "deep plane facelift and neck lift support group",
-      "checkpoint": "2026-10-07T02:48:50.191Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1263383098715932/": {
       "group_url": "https://www.facebook.com/groups/1263383098715932/",
       "group_name": "worldwide face and neck lift support group",
-      "checkpoint": "2026-10-07T02:51:48.032Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/536390454675733/": {
       "group_url": "https://www.facebook.com/groups/536390454675733/",
       "group_name": "Facelift Support Group",
-      "checkpoint": "2026-10-07T02:50:21.777Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1146474503904898/": {
       "group_url": "https://www.facebook.com/groups/1146474503904898/",
       "group_name": "Facelift & Necklift Turkey",
-      "checkpoint": "2026-10-07T02:52:28.874Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1238064077563409/": {
       "group_url": "https://www.facebook.com/groups/1238064077563409/",
       "group_name": "Facelift in Vietnam",
-      "checkpoint": "2026-10-07T02:53:07.822Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1837470467008684/": {
       "group_url": "https://www.facebook.com/groups/1837470467008684/",
       "group_name": "TUMMY TUCK, FACELIFTS, 360 LIPO, & EVERYTHING COSMETIC SUPPORT GROUP",
-      "checkpoint": "2026-10-07T02:53:49.094Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1013711189799224/": {
       "group_url": "https://www.facebook.com/groups/1013711189799224/",
       "group_name": "Facelift / Eye Lift Turkey",
-      "checkpoint": "2026-10-07T02:54:28.460Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/faceliftsupport/": {
       "group_url": "https://www.facebook.com/groups/faceliftsupport/",
       "group_name": "Facelift Info and Support- Inclusive to ALL",
-      "checkpoint": "2026-10-06T06:00:00.000Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/surgeryinturkiye/": {
       "group_url": "https://www.facebook.com/groups/surgeryinturkiye/",
       "group_name": "Surgery in Turkey - Surgeon Reviews and Recommendations",
-      "checkpoint": "2026-10-07T02:56:00.092Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/604041441428373/": {
       "group_url": "https://www.facebook.com/groups/604041441428373/",
       "group_name": "Rhinoplasty in Turkey - real experiences, doctor suggestions",
-      "checkpoint": "2026-10-07T02:56:59.517Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/faceliftinbali/": {
       "group_url": "https://www.facebook.com/groups/faceliftinbali/",
       "group_name": "Facelift in Bali",
-      "checkpoint": "2026-10-07T02:58:05.682Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1112006706005303/": {
       "group_url": "https://www.facebook.com/groups/1112006706005303/",
       "group_name": "Breast Reduction Surgery Support Group",
-      "checkpoint": "2026-10-07T02:58:44.474Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/302182326941065/": {
       "group_url": "https://www.facebook.com/groups/302182326941065/",
       "group_name": "Breast implants lift and reduction support",
-      "checkpoint": "2026-10-07T02:59:47.866Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/195026047181939/": {
       "group_url": "https://www.facebook.com/groups/195026047181939/",
       "group_name": "FaceLift Mexico",
-      "checkpoint": "2026-10-07T03:00:27.611Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/1530734608157993/": {
       "group_url": "https://www.facebook.com/groups/1530734608157993/",
       "group_name": "Plastic Surgery in Turkey",
-      "checkpoint": "2026-10-07T03:05:44.345Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/290533306574241/": {
       "group_url": "https://www.facebook.com/groups/290533306574241/",
       "group_name": "Tummy tuck support group",
-      "checkpoint": "2026-10-07T03:06:24.319Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     },
     "https://www.facebook.com/groups/547821016940250/": {
       "group_url": "https://www.facebook.com/groups/547821016940250/",
       "group_name": "Tijuana Plastic Surgery & Medical Tourism",
-      "checkpoint": "2026-10-07T03:08:20.857Z"
+      "checkpoint": "2026-10-07T03:20:00.000Z"
     }
   }
 }
