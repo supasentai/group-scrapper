@@ -137,6 +137,18 @@ node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results `
 
 `cleanup-staging.js` chỉ xóa khi có `--apply`; mặc định là dry-run. Utility chỉ xét `.runner-staging-*` cũ hơn ngưỡng, bỏ qua directory đang hiện hành hoặc được tham chiếu trong artifact/report.
 
+### Scheduled Operations Phase 5
+
+Task Scheduler/cron chỉ nên gọi một cycle bounded; không tạo system automation từ repo:
+
+```powershell
+node .\cycle-runner.js --groups-file .\groups.csv --results-dir .\results `
+  --max-runtime-ms 900000 --child-timeout-ms 1020000 `
+  --previous-report .\results\aggregate_report_<previous>.json
+```
+
+`cycle-runner.js` tuần tự gọi batch và aggregate, ghi `cycle_manifest_<id>.json` với lineage, command/config, timestamps, paths, exit statuses, counts và notification summary. `--dry-run` chỉ lập kế hoạch, không gọi child/browser. Needs-user-action, failed, stopped và pending là actionable/fail-safe; không tự login, bypass CAPTCHA hoặc gửi notification. `monitor-report.js` so sánh report hiện tại với report trước đó và chỉ trả JSON machine-readable gồm `notify`, reasons, nhóm mới, zero-result, failures và quality changes.
+
 ## Format báo cáo handoff
 
 Mỗi agent trả kết quả theo mẫu:

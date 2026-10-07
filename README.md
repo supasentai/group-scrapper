@@ -176,6 +176,25 @@ node .\cleanup-staging.js --results-dir .\results --older-than-ms 3600000 --appl
 
 Chỉ staging directory cũ, không được tham chiếu và không còn hiện hành mới đủ điều kiện xóa.
 
+### Scheduled Operations Phase 5
+
+`cycle-runner.js` là entry point bounded-cycle cho Task Scheduler/cron. Nó chạy batch rồi aggregate, ghi `cycle_manifest_<id>.json` và không tự tạo lịch hệ thống:
+
+```powershell
+node .\cycle-runner.js `
+  --groups-file .\groups.csv `
+  --results-dir .\results `
+  --max-runtime-ms 900000 `
+  --child-timeout-ms 1020000 `
+  --previous-report .\results\aggregate_report_<previous>.json
+```
+
+Dùng `--dry-run` để chỉ ghi kế hoạch command, không khởi chạy child/browser. Cycle ghi lineage, config, exit status, batch/aggregate paths, counts và notification summary; needs-user-action, failed, stopped hoặc pending đều được đánh dấu actionable. `monitor-report.js` chỉ tạo JSON so sánh local (`notify`, reasons, nhóm mới/zero-result/failure và quality changes), không gửi notification ra ngoài:
+
+```powershell
+node .\monitor-report.js --report .\results\aggregate_report_<current>.json --previous-report .\results\aggregate_report_<previous>.json
+```
+
 ## Chạy kiểm thử bộ phân loại
 
 ```powershell
