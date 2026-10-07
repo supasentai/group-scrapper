@@ -25,7 +25,7 @@ Từ đợt quét tiếp theo, dùng `fb-group-lead-pilot.js` đã được tinh
 
 1. Mở file CSV bằng Excel hoặc Google Sheets.
 2. Với file pilot của đợt mới, xem trước 8 cột `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`.
-3. Phân biệt lead và audit bằng tên file; các điểm số/phân loại là dữ liệu nội bộ, không nằm trong schema 8 cột này.
+3. File scan raw không phân biệt lead/audit. Nếu cần danh sách marketing, chạy `merge-results.js` để tạo các file `repaired_leads` và `repaired_audit`; các điểm số/phân loại không nằm trong schema raw 8 cột.
 4. Mở `content_url` để kiểm duyệt thủ công nội dung và bối cảnh.
 5. Đánh dấu trạng thái nội bộ như `approved`, `needs_review` hoặc `reject` trong một bản sao làm việc.
 
@@ -44,7 +44,7 @@ Ngưỡng chọn lead hiện tại (dùng nội bộ trước khi chia file): `i
 2. Mở từng link group trong tab Facebook riêng.
 3. Vào **Thảo luận** và chọn **Bài viết mới** nếu có.
 4. Chạy `fb-group-lead-pilot.js` trong Developer Tools Console.
-5. Chờ tải file lead/audit, đổi tên theo group và lưu lại nguồn.
+5. Chờ tải file scan raw, đổi tên theo group và lưu lại nguồn.
 6. Nếu có nhiều file nguồn cần gộp, chạy `node .\merge-results.js .\results\30d_YYYYMMDD 30`. Lệnh này chỉ áp dụng cho đợt mới và không sửa các CSV nguồn. Với đợt 365 ngày, dùng thư mục và tham số `365` tương ứng.
 
 Chỉ mở rộng phạm vi lên 365 ngày sau khi đã kiểm duyệt tối thiểu 100 dòng pilot.

@@ -1,5 +1,7 @@
 # Facebook group scan report — 2026-10-06
 
+> **Historical artifact — legacy contract.** This report records the 2026-10-06 run, when the collector exported separate `leads` and `audit` files. Do not use its filenames or workflow as current output guidance; new runs export `fb_group_scan_<days>d_*.csv` and split downstream.
+
 Source: open spreadsheet `DANH SÁCH CÁC GROUP`. The spreadsheet contained 31 link rows and 30 unique group URLs; the duplicate URL was scanned once.
 
 Output directory: `C:\Users\ADMIN\Downloads`

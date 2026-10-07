@@ -5,7 +5,7 @@ Công cụ pilot 30 ngày để phát hiện hai nhóm người dùng trong bài
 - `potential_customer`: đang tìm hiểu hoặc có kế hoạch làm dịch vụ.
 - `experienced_customer`: đã làm và đang chia sẻ trải nghiệm.
 
-Các trường hợp nghi seeding và nội dung không đủ tín hiệu được xuất sang file audit để kiểm duyệt, không bị trộn vào danh sách lead.
+Các trường hợp nghi seeding và nội dung không đủ tín hiệu được phân loại ở bước downstream để kiểm duyệt, không bị trộn vào danh sách lead.
 
 ## Điều phối multi-agent
 
@@ -35,7 +35,7 @@ Công cụ chỉ đọc nội dung Facebook đã tải và hiển thị trong ta
 - Một đoạn nội dung ngắn phục vụ kiểm duyệt.
 - Cờ chất lượng như `anonymous_author`, `ui_chrome_removed`, `text_truncated` hoặc `comment_permalink_missing`.
 
-CSV pilot cố định 8 cột theo thứ tự: `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`. Các điểm số và trường phân loại vẫn được dùng nội bộ để chia file `leads`/`audit`, nhưng không xuất thêm cột. `published_at_text` được ghi thành ISO timestamp khi Facebook cung cấp đủ thông tin; nếu không phân giải được thì giữ text gốc để tránh đoán sai ngày.
+CSV pilot cố định 8 cột theo thứ tự: `group_name`, `group_url`, `content_url`, `name`, `profile_url`, `source_type`, `published_at_text`, `text_excerpt`. Collector chỉ xuất một file raw/all cho mỗi group; các điểm số và trường phân loại được giữ nội bộ để bước merge/QA downstream tạo `leads`/`audit` khi cần. `published_at_text` được ghi thành ISO timestamp khi Facebook cung cấp đủ thông tin; nếu không phân giải được thì giữ text gốc để tránh đoán sai ngày.
 
 Công cụ không mở từng profile, không tìm email/số điện thoại và không gọi endpoint nội bộ của Facebook.
 
@@ -45,9 +45,9 @@ Công cụ không mở từng profile, không tìm email/số điện thoại v�
 2. Với từng dòng có link group, mở link đó trong một tab Facebook riêng. Không chạy bộ quét khi vẫn đang ở spreadsheet.
 3. Trong tab group, mở **Discussion** và chọn cách sắp xếp bài mới nhất nếu Facebook hiển thị tùy chọn này.
 4. Mở Developer Tools → **Console**, sao chép toàn bộ nội dung `fb-group-lead-pilot.js`, dán vào Console rồi nhấn Enter.
-5. Chờ đến khi quét xong hoặc bấm **Dừng & xuất CSV**. Nếu đổi tên file theo group/ID, giữ tiền tố `fb_group_leads_<days>d_` hoặc `fb_group_audit_<days>d_`, ví dụ `fb_group_leads_30d_20261006_group123.csv`.
+5. Chờ đến khi quét xong hoặc bấm **Dừng & xuất CSV**. Collector tải một file raw/all; nếu đổi tên theo group/ID, giữ tiền tố `fb_group_scan_<days>d_`, ví dụ `fb_group_scan_30d_20261006_group123.csv`.
 6. Quay lại spreadsheet, mở link group kế tiếp và lặp lại từ bước 3.
-7. Sau khi quét hết danh sách, giữ các file `leads` và `audit` theo từng group. Không cần tự khử trùng lặp bằng tay nếu dùng bộ gom ở bước kế tiếp; bộ gom dùng profile/post/source/nội dung để khử trùng lặp và vẫn giữ các tài khoản ẩn danh.
+7. Sau khi quét hết danh sách, giữ các file `scan` raw theo từng group. Không cần tự khử trùng lặp bằng tay nếu dùng bộ gom ở bước kế tiếp; bộ gom dùng profile/post/source/nội dung để khử trùng lặp và vẫn giữ các tài khoản ẩn danh.
 8. Có thể dùng bộ gom chuẩn hóa:
 
 ```powershell
@@ -83,12 +83,12 @@ node .\checkpoint-tools.js export-map
 - Agent ghi lại cả trạng thái lượt chạy bằng `checkpoint-tools.js record-run`. Trạng thái `zero_result_after_checkpoint` nghĩa là đã quét nhưng không có dòng mới; trạng thái `no_records_seen` nghĩa là DOM không trả về bản ghi và không được tiến checkpoint.
 - Đổi profile hoặc xóa dữ liệu site không còn làm mất checkpoint chính trong dự án, nhưng vẫn có thể làm mất fallback `localStorage`.
 
-Khi hoàn thành, trình duyệt tải hai file:
+Khi hoàn thành, trình duyệt tải một file scan:
 
-- `fb_group_leads_<days>d_*.csv`: các lead đạt ngưỡng, kể cả tài khoản ẩn danh nếu nội dung đủ tín hiệu.
-- `fb_group_audit_<days>d_*.csv`: seeding, nhiễu và các dòng có danh tính cần xem lại.
+- `fb_group_scan_<days>d_*.csv`: toàn bộ dòng raw/all của một group, kể cả dòng sẽ được đưa vào audit.
+- `merge-results.js`: bước downstream tùy chọn để tạo `repaired_all`, `repaired_leads`, `repaired_audit` và `quality_report`.
 
-Kể cả khi một nhóm không có dòng mới, script vẫn tải file CSV chỉ có header. Vì vậy có thể phân biệt nhóm đã quét nhưng `zero result` với nhóm chưa chạy.
+Kể cả khi một nhóm không có dòng mới, script vẫn tải file scan chỉ có header. Vì vậy có thể phân biệt nhóm đã quét nhưng `zero result` với nhóm chưa chạy.
 
 ## Chạy kiểm thử bộ phân loại
 

@@ -66,8 +66,9 @@ function writeCsv(filePath, rows) {
 
 function chooseSourceFiles(dir) {
   const names = fs.readdirSync(dir).filter((name) => name.toLowerCase().endsWith(".csv"));
-  const isSource = (name) => /^fb_group_(?:leads|audit)_\d+d_.+\.csv$/i.test(name)
-    && !/_repaired_(?:all|leads|audit)_/i.test(name);
+  const isSource = (name) => /^fb_group_(?:scan|leads|audit)_\d+d_.+\.csv$/i.test(name)
+    && !/_merged_/i.test(name)
+    && !/_repaired_/i.test(name);
   // Có thể tồn tại đồng thời file merged và file từng group. Lấy tất cả
   // nguồn rồi dedupe ở bước sau để không bỏ sót file mới.
   return names.filter(isSource);
@@ -102,19 +103,28 @@ function normalizeRows(rows, now) {
     const rawText = String(row.text_excerpt || "");
     const text = pilot.cleanSourceText(rawText, name, timeText);
     const groupUrl = row.group_url || "";
-    const postUrl = row.post_url || row.content_url || "";
+    const groupName = pilot.isLikelyUiGroupHeading(row.group_name) ? "" : (row.group_name || "");
+    const rawContentUrl = String(row.content_url || "").trim();
+    const rawPostUrl = String(row.post_url || "").trim();
+    const postUrl = pilot.canonicalPostUrl(rawPostUrl || rawContentUrl) || rawPostUrl || rawContentUrl;
+    const contentUrl = pilot.canonicalContentUrl(rawContentUrl)
+      || pilot.canonicalContentUrl(row.comment_url || "")
+      || rawContentUrl
+      || postUrl;
+    const commentUrl = pilot.canonicalContentUrl(row.comment_url || "")
+      || (contentUrl && contentUrl !== postUrl ? contentUrl : "");
     return {
       ...row,
       _index: index,
       _date: date,
       _rawSourceType: row.source_type || "",
-      group_name: row.group_name || "",
+      group_name: groupName,
       group_url: groupUrl,
       post_url: postUrl,
-      comment_url: row.comment_url || "",
-      content_url: row.comment_url || row.content_url || postUrl,
+      comment_url: commentUrl,
+      content_url: contentUrl,
       published_at: date ? date.toISOString() : "",
-      published_at_text: timeText,
+      published_at_text: date ? date.toISOString() : timeText,
       name,
       profile_url: anonymous ? "" : (row.profile_url || ""),
       is_anonymous: anonymous ? "yes" : "no",
@@ -131,6 +141,8 @@ function normalizeRows(rows, now) {
     const explicit = /^(?:comment|reply)$/i.test(row._rawSourceType);
     row._sourceTypeInferred = !explicit;
     if (explicit) row.source_type = row._rawSourceType.toLowerCase();
+    else if (/reply_comment_id=/i.test(row.content_url)) row.source_type = "reply";
+    else if (/comment_id=/i.test(row.content_url) || row.content_url !== row.post_url) row.source_type = "comment";
     else row.source_type = count === 0 ? "post" : "comment";
     if (row.source_type !== "post" && !row.comment_url) {
       row.comment_url = row.post_url;
@@ -223,7 +235,7 @@ function main() {
   const now = new Date();
   const cutoff = new Date(now.getTime() - days * 86_400_000);
   const sourceFiles = chooseSourceFiles(dir);
-  if (!sourceFiles.length) throw new Error(`Không tìm thấy file lead/audit trong ${dir}`);
+  if (!sourceFiles.length) throw new Error(`Không tìm thấy file scan/lead/audit trong ${dir}`);
 
   const raw = sourceFiles.flatMap((name) => parseCsv(fs.readFileSync(path.join(dir, name), "utf8")));
   const normalized = dedupe(normalizeRows(raw, now));

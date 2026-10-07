@@ -38,7 +38,7 @@ Không được tự sửa CSV trong `results/`, tự đổi threshold hoặc pu
 ### Browser Collector
 
 - Chạy script trên các group được giao.
-- Lưu file `leads` và `audit` theo đúng schema 8 cột.
+- Lưu một file `scan` raw/all theo đúng schema 8 cột; không tự chia `leads`/`audit` ở bước thu thập.
 - Ghi checkpoint và trạng thái run.
 - Không sửa code, không chỉnh tay nội dung CSV, không loại dòng để làm đẹp số liệu.
 
@@ -62,7 +62,7 @@ Chỉ đọc output và classifier. Lấy mẫu độc lập, đánh nhãn đún
 
 1. Orchestrator đọc `checkpoints.json`, xác định danh sách group và tạo task.
 2. Gửi task cho Script Engineer và Browser Collector nếu cần chạy song song.
-3. Browser Collector trả về file, số dòng, group đã xử lý và `run_status`.
+3. Browser Collector trả về file scan raw, số dòng, group đã xử lý và `run_status`.
 4. Orchestrator chuyển output cho Output QA và Classifier Evaluator.
 5. Nếu QA fail, Orchestrator gửi lỗi có bằng chứng cho Script Engineer; không sửa trực tiếp ở QA.
 6. Nếu classifier có false positive/false negative đáng kể, Evaluator chỉ đề xuất; Orchestrator quyết định có tạo task sửa hay không.
@@ -87,7 +87,7 @@ node .\checkpoint-tools.js record-run `
   "2026-10-07T01:39:00.000Z" 120 0 0 0 "Tên group"
 ```
 
-`leads` và `audit` vẫn phải được tải kể cả khi file chỉ có header. Không có file không được xem là `zero result`; đó là trạng thái chưa xác định.
+File scan vẫn phải được tải kể cả khi chỉ có header. Không có file không được xem là `zero result`; đó là trạng thái chưa xác định. Việc chia `leads`/`audit` chỉ thực hiện ở bước merge/QA downstream.
 
 ## Format báo cáo handoff
 

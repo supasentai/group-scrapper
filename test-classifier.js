@@ -1,7 +1,56 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const pilot = require("./fb-group-lead-pilot.js");
+const mergeResults = require("./merge-results.js");
+
+assert.deepEqual(pilot.CSV_HEADERS, [
+  "group_name",
+  "group_url",
+  "content_url",
+  "name",
+  "profile_url",
+  "source_type",
+  "published_at_text",
+  "text_excerpt",
+]);
+assert.equal(pilot.isLikelyUiGroupHeading("Thông báo"), true);
+assert.equal(pilot.isLikelyUiGroupHeading("Facelift Support Group"), false);
+assert.equal(pilot.makeScanFilename(30, 1234), "fb_group_scan_30d_1234.csv");
+const previousDocument = global.document;
+const previousLocation = global.location;
+try {
+  global.location = {
+    href: "https://www.facebook.com/groups/123/",
+    origin: "https://www.facebook.com",
+    pathname: "/groups/123/",
+  };
+  global.document = {
+    title: "Thông báo | Facebook",
+    querySelectorAll: () => [{ textContent: "Thông báo" }],
+    querySelector: () => ({ getAttribute: () => "Actual Group" }),
+  };
+  assert.deepEqual(pilot.getGroupContext(), {
+    groupName: "Actual Group",
+    groupUrl: "https://www.facebook.com/groups/123/",
+  });
+} finally {
+  if (previousDocument === undefined) delete global.document;
+  else global.document = previousDocument;
+  if (previousLocation === undefined) delete global.location;
+  else global.location = previousLocation;
+}
+
+const emptyScanCsv = pilot.buildCsv([]);
+assert.equal(emptyScanCsv.startsWith("\uFEFF"), true);
+assert.deepEqual(emptyScanCsv.replace(/^\uFEFF/, "").split("\n")[0].split(",").map((value) => value.slice(1, -1)), pilot.CSV_HEADERS);
+const scanFixtureRow = Object.fromEntries(pilot.CSV_HEADERS.map((header) => [header, header === "text_excerpt" ? "A quoted, useful question" : header]));
+const parsedScanFixture = mergeResults.parseCsv(pilot.buildCsv([scanFixtureRow]));
+assert.deepEqual(Object.keys(parsedScanFixture[0]), pilot.CSV_HEADERS);
+assert.equal(parsedScanFixture[0].text_excerpt, "A quoted, useful question");
 
 const prospect = pilot.analyzeText(
   "Hi, I'm considering a BBL next month and looking for a reputable surgeon in Vietnam. Has anyone had this procedure?",
@@ -207,5 +256,98 @@ const clinicPromotion = pilot.analyzeText(
   "For our clients, we use JCI-accredited hospitals and can recommend the best plastic surgeon.",
 );
 assert.equal(clinicPromotion.segment, "seed_suspect");
+
+const scanPostUrl = "https://www.facebook.com/groups/123/posts/456/";
+const scanCommentUrl = `${scanPostUrl}?comment_id=789`;
+const mergedScanRows = mergeResults.normalizeRows([
+  {
+    group_name: "Test Group",
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: scanPostUrl,
+    name: "Post Author",
+    profile_url: "https://www.facebook.com/post-author/",
+    source_type: "post",
+    published_at_text: "2026-10-06T12:00:00.000Z",
+    text_excerpt: "I am considering a facelift and need recommendations.",
+  },
+  {
+    group_name: "Test Group",
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: scanCommentUrl,
+    name: "Comment Author",
+    profile_url: "https://www.facebook.com/comment-author/",
+    source_type: "comment",
+    published_at_text: "2026-10-06T12:05:00.000Z",
+    text_excerpt: "I had my facelift six weeks ago and recovery was difficult.",
+  },
+  {
+    group_name: "Test Group",
+    group_url: "https://www.facebook.com/groups/123/",
+    content_url: `${scanPostUrl}?reply_comment_id=790`,
+    name: "Reply Author",
+    profile_url: "https://www.facebook.com/reply-author/",
+    source_type: "reply",
+    published_at_text: "2026-10-06T12:06:00.000Z",
+    text_excerpt: "I agree, the recovery took time.",
+  },
+], new Date("2026-10-07T12:00:00.000Z"));
+assert.equal(mergedScanRows[0].post_url, scanPostUrl);
+assert.equal(mergedScanRows[0].content_url, scanPostUrl);
+assert.equal(mergedScanRows[1].post_url, scanPostUrl);
+assert.equal(mergedScanRows[1].content_url, scanCommentUrl);
+assert.equal(mergedScanRows[1].comment_url, scanCommentUrl);
+assert.equal(mergedScanRows[2].post_url, scanPostUrl);
+assert.equal(mergedScanRows[2].source_type, "reply");
+assert.equal(mergedScanRows[2].content_url, `${scanPostUrl}?reply_comment_id=790`);
+assert.equal(mergedScanRows[0].published_at, "2026-10-06T12:00:00.000Z");
+
+const inferredComment = mergeResults.normalizeRows([{
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanCommentUrl,
+  name: "Comment Author",
+  text_excerpt: "I am considering a facelift and need recommendations.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(inferredComment.source_type, "comment");
+assert.equal(inferredComment.post_url, scanPostUrl);
+
+const relativeTimeRow = mergeResults.normalizeRows([{
+  group_name: "Thông báo",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  published_at_text: "1h",
+  text_excerpt: "I am considering a facelift and need recommendations.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(relativeTimeRow.group_name, "");
+assert.equal(relativeTimeRow.published_at_text, "2026-10-07T11:00:00.000Z");
+
+const unparsedTimeRow = mergeResults.normalizeRows([{
+  group_name: "Test Group",
+  group_url: "https://www.facebook.com/groups/123/",
+  content_url: scanPostUrl,
+  source_type: "post",
+  published_at_text: "time unavailable",
+  text_excerpt: "I am considering a facelift and need recommendations.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(unparsedTimeRow.published_at_text, "time unavailable");
+
+const sourceFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "group-scrapper-source-test-"));
+try {
+  for (const filename of [
+    "fb_group_scan_30d_group-a.csv",
+    "fb_group_leads_30d_legacy.csv",
+    "fb_group_audit_30d_legacy.csv",
+    "fb_group_leads_30d_merged_20261007.csv",
+    "fb_group_audit_30d_merged_20261007.csv",
+    "fb_group_scan_30d_repaired_all_20261007.csv",
+  ]) fs.writeFileSync(path.join(sourceFixtureDir, filename), "", "utf8");
+  assert.deepEqual(mergeResults.chooseSourceFiles(sourceFixtureDir).sort(), [
+    "fb_group_audit_30d_legacy.csv",
+    "fb_group_leads_30d_legacy.csv",
+    "fb_group_scan_30d_group-a.csv",
+  ]);
+} finally {
+  fs.rmSync(sourceFixtureDir, { recursive: true, force: true });
+}
 
 console.log("Classifier tests passed.");

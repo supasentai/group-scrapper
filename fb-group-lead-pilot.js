@@ -144,9 +144,41 @@
   const INLINE_ACTION_PATTERN = /(?:Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi)(?=\s*(?:\d+|Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|Follow|Theo dõi|$))/g;
   const INLINE_CHROME_PATTERN = /(?:See translation|View translation|Xem bản dịch|Xem thêm|See more|Đã chỉnh sửa|nhiều nhất|phổ biến nhất|Most relevant|nổi bật|Featured|Highlighted|Người kiểm duyệt nổi bật|Top contributor|Chuyên gia trong nhóm|Group expert)(?=\s*(?:·|•|Theo dõi|Follow|\d+|$))/gi;
 
+  const UI_GROUP_HEADINGS = new Set([
+    "about",
+    "bạn bè",
+    "cài đặt",
+    "discussion",
+    "feed",
+    "friends",
+    "groups",
+    "home",
+    "info",
+    "marketplace",
+    "menu",
+    "more",
+    "nhóm",
+    "notifications",
+    "notification",
+    "reels",
+    "search",
+    "settings",
+    "shortcuts",
+    "thảo luận",
+    "thông báo",
+    "thông tin",
+    "trang chủ",
+    "video",
+    "watch",
+  ]);
+
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+  function isLikelyUiGroupHeading(value) {
+    return UI_GROUP_HEADINGS.has(normalizeSpace(value).toLowerCase());
+  }
 
   function escapeRegExp(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -221,10 +253,11 @@
     const groupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
     const heading = [...document.querySelectorAll("h1")]
       .map((node) => normalizeSpace(node.textContent))
-      .find(Boolean);
+      .find((value) => value && !isLikelyUiGroupHeading(value));
     const ogTitle = normalizeSpace(document.querySelector('meta[property="og:title"]')?.getAttribute("content"));
     const title = normalizeSpace(document.title).replace(/\s*[|·-]\s*Facebook.*$/i, "");
-    return { groupName: heading || ogTitle || title, groupUrl };
+    const candidates = [heading, ogTitle, title].filter((value) => value && !isLikelyUiGroupHeading(value));
+    return { groupName: candidates[0] || "", groupUrl };
   }
 
   function checkpointStorageKey(groupUrl) {
@@ -815,14 +848,22 @@
     return `"${String(value ?? "").replace(/"/g, '""')}"`;
   }
 
-  function downloadCsv(rows, filename) {
-    // Luôn tải cả file rỗng chỉ có header. Như vậy group không có dòng mới
-    // vẫn có bằng chứng output và không bị nhầm với group chưa chạy.
+  function buildCsv(rows) {
     const headers = CSV_HEADERS;
-    const csv = "\uFEFF" + [
+    return "\uFEFF" + [
       headers.map(csvEscape).join(","),
       ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
     ].join("\n");
+  }
+
+  function makeScanFilename(days, runStamp) {
+    return `fb_group_scan_${days}d_${runStamp}.csv`;
+  }
+
+  function downloadCsv(rows, filename) {
+    // Luôn tải cả file rỗng chỉ có header. Như vậy group không có dòng mới
+    // vẫn có bằng chứng output và không bị nhầm với group chưa chạy.
+    const csv = buildCsv(rows);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const anchor = document.createElement("a");
     anchor.href = URL.createObjectURL(blob);
@@ -915,8 +956,7 @@
     }
 
     const runStamp = Date.now();
-    const leadFilename = options.leadFilename || `fb_group_leads_${CONFIG.days}d_${runStamp}.csv`;
-    const auditFilename = options.auditFilename || `fb_group_audit_${CONFIG.days}d_${runStamp}.csv`;
+    const scanFilename = options.scanFilename || makeScanFilename(CONFIG.days, runStamp);
 
     const state = { stopped: false };
     const hud = createHud(state);
@@ -969,8 +1009,9 @@
     );
     const audit = classified.filter((row) => !leads.includes(row));
 
-    downloadCsv(leads, leadFilename);
-    downloadCsv(audit, auditFilename);
+    // Collector chỉ xuất một file raw/all. Việc chia leads/audit là trách
+    // nhiệm của bước merge/QA downstream để tránh phải gộp lại ngay sau đó.
+    downloadCsv(classified, scanFilename);
     const completedNaturally = !state.stopped;
     // Không tiến checkpoint nếu trang không trả về bản ghi nào (ví dụ bị
     // login wall, DOM chưa tải hoặc Facebook thay đổi giao diện), để lần sau
@@ -991,7 +1032,7 @@
         : records.size === 0
           ? " Chưa cập nhật checkpoint vì chưa đọc được bản ghi."
           : " Không có dòng sau khi lọc theo checkpoint.";
-    hud.finish(`Đã xuất ${leads.length} lead và ${audit.length} dòng audit.${checkpointMessage}`);
+    hud.finish(`Đã xuất file scan raw với ${classified.length} dòng (${leads.length} lead nội bộ, ${audit.length} audit nội bộ).${checkpointMessage}`);
 
     const result = {
       leads,
@@ -1016,8 +1057,7 @@
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
-        lead_filename: leadFilename,
-        audit_filename: auditFilename,
+        scan_filename: scanFilename,
       };
     }
 
@@ -1026,7 +1066,9 @@
 
   return {
     CONFIG,
+    CSV_HEADERS,
     analyzeText,
+    buildCsv,
     canonicalContentUrl,
     canonicalPostUrl,
     canonicalGroupUrl,
@@ -1039,6 +1081,8 @@
     filterRecordsSince,
     inferAuthorFromText,
     inferSourceType,
+    isLikelyUiGroupHeading,
+    makeScanFilename,
     readCheckpoint,
     writeCheckpoint,
     normalizeProfileUrl,
