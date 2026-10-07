@@ -45,6 +45,12 @@ try {
     "--max-runtime-ms", "1000",
     "--child-timeout-ms", "2000",
   ]);
+  const runnerArgs = batch.makeRunnerArgs({
+    group_url: "https://www.facebook.com/groups/alpha/",
+    group_name: "Alpha Group",
+  }, config);
+  assert.ok(runnerArgs.includes("--group-name"));
+  assert.equal(runnerArgs[runnerArgs.indexOf("--group-name") + 1], "Alpha Group");
   const runCalls = [];
   const fakeRunner = (group) => {
     runCalls.push(group.group_url);

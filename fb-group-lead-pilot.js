@@ -283,9 +283,11 @@
     }
   }
 
-  function getGroupContext() {
-    if (typeof document === "undefined") return { groupName: "", groupUrl: "" };
+  function getGroupContext(groupNameOverride = "") {
+    const trustedGroupName = normalizeSpace(groupNameOverride);
+    if (typeof document === "undefined") return { groupName: trustedGroupName, groupUrl: "" };
     const groupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
+    if (trustedGroupName) return { groupName: trustedGroupName, groupUrl };
     const groupLinkNames = [...document.querySelectorAll("a[href]")]
       .filter((link) => isExactGroupLink(link.href || link.getAttribute("href"), groupUrl))
       .map((link) => normalizeSpace(link.getAttribute("aria-label") || link.textContent))
@@ -1113,7 +1115,7 @@
     const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
-    const groupContext = getGroupContext();
+    const groupContext = getGroupContext(options.groupName);
     const groupUrl = groupContext.groupUrl || canonicalGroupUrl(location.href);
     const scanStartedAt = new Date();
     const previousCheckpoint = readCheckpoint(groupUrl);

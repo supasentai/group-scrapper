@@ -140,7 +140,7 @@ node .\batch-runner.js `
   --max-runtime-ms 900000
 ```
 
-Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Dòng trống, URL sai và URL trùng được ghi rõ là `skipped_blank`, `skipped_invalid` hoặc `skipped_duplicate`. Mỗi group đã chạy chỉ được ghi `zero_result` khi browser runner trả cặp artifact hợp lệ với manifest `status=zero_result`; thiếu hoặc hỏng manifest là `failed`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
+Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Tên group từ cột `TÊN HỘI NHÓM` được truyền tin cậy vào manifest; không dùng heading UI trên Facebook để thay thế. Dòng trống, URL sai và URL trùng được ghi rõ là `skipped_blank`, `skipped_invalid` hoặc `skipped_duplicate`. Mỗi group đã chạy chỉ được ghi `zero_result` khi browser runner trả cặp artifact hợp lệ với manifest `status=zero_result`; thiếu hoặc hỏng manifest là `failed`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
 ## Chạy kiểm thử bộ phân loại
 

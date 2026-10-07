@@ -80,6 +80,20 @@ try {
     groupName: "Face | Neck Support Group",
     groupUrl: "https://www.facebook.com/groups/123/",
   });
+  assert.deepEqual(pilot.getGroupContext("Trusted Input Group"), {
+    groupName: "Trusted Input Group",
+    groupUrl: "https://www.facebook.com/groups/123/",
+  });
+  assert.equal(pilot.buildRunManifest({
+    groupUrl: "https://www.facebook.com/groups/123/",
+    groupName: pilot.getGroupContext("Trusted Input Group").groupName,
+    runId: "scan_test",
+    startedAt: "2026-10-07T00:00:00.000Z",
+    completedAt: "2026-10-07T00:01:00.000Z",
+    rowCount: 0,
+    status: "zero_result",
+    outputFile: "fb_group_scan_3d_test.csv",
+  }).group_name, "Trusted Input Group");
 } finally {
   if (previousDocument === undefined) delete global.document;
   else global.document = previousDocument;

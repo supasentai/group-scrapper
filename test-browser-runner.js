@@ -14,6 +14,7 @@ assert.equal(runner.validateCdpEndpoint("http://127.0.0.1:9222/"), "http://127.0
 
 const config = runner.parseArgs([
   "--group-url", "https://www.facebook.com/groups/example/",
+  "--group-name", "Trusted Input Group",
   "--collector-path", "fb-group-lead-pilot.js",
   "--cdp-endpoint", "http://127.0.0.1:9333",
   "--days", "3",
@@ -22,6 +23,7 @@ const config = runner.parseArgs([
   "--results-dir", "results/runner-test",
 ]);
 assert.equal(config.groupUrl, "https://www.facebook.com/groups/example/");
+assert.equal(config.groupName, "Trusted Input Group");
 assert.equal(config.days, 3);
 assert.equal(config.maxRounds, 4);
 assert.equal(config.maxRuntimeMs, 90000);
@@ -42,7 +44,10 @@ assert.deepEqual(runner.buildCollectorOptions(config), {
   days: 3,
   maxRounds: 4,
   maxRuntimeMs: 90000,
+  groupName: "Trusted Input Group",
 });
+assert.equal(runner.validateGroupName("  Trusted   Input Group  "), "Trusted Input Group");
+assert.throws(() => runner.validateGroupName("   "), /must not be empty/);
 
 const csv = "fb_group_scan_3d_scan_123.csv";
 const manifest = "fb_group_scan_3d_scan_123.manifest.json";

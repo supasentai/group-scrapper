@@ -20,6 +20,7 @@ function usage() {
     "  node browser-runner.js --group-url <url> [options]",
     "  node browser-runner.js --prepare-profile [--cdp-endpoint <url>] [--profile-dir <path>]",
     "Options:",
+    "  --group-name <name>        Trusted group name for batch runs",
     "  --collector-path <path>    Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint (default http://127.0.0.1:9222)",
     "  --days <n>                 Collector lookback days (default 30)",
@@ -54,6 +55,13 @@ function validateGroupUrl(rawUrl) {
   return `${url.protocol}//${url.hostname}/groups/${match[1]}/`;
 }
 
+function validateGroupName(rawName) {
+  const name = String(rawName || "").replace(/\s+/g, " ").trim();
+  if (!name) throw new Error("Group name must not be empty");
+  if (name.length > 200) throw new Error("Group name is too long");
+  return name;
+}
+
 function validateCdpEndpoint(rawEndpoint) {
   let endpoint;
   try {
@@ -70,6 +78,7 @@ function validateCdpEndpoint(rawEndpoint) {
 function parseArgs(argv = process.argv.slice(2)) {
   const config = {
     groupUrl: "",
+    groupName: "",
     collectorPath: DEFAULT_COLLECTOR_PATH,
     cdpEndpoint: DEFAULT_CDP_ENDPOINT,
     days: 30,
@@ -83,7 +92,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--group-url", "--collector-path", "--cdp-endpoint", "--days", "--max-rounds",
+    "--group-url", "--group-name", "--collector-path", "--cdp-endpoint", "--days", "--max-rounds",
     "--max-runtime-ms", "--results-dir", "--profile-dir", "--download-timeout-ms", "--child-timeout-ms",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
@@ -101,6 +110,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
     index += 1;
     if (flag === "--group-url") config.groupUrl = validateGroupUrl(value);
+    else if (flag === "--group-name") config.groupName = validateGroupName(value);
     else if (flag === "--collector-path") config.collectorPath = path.resolve(value);
     else if (flag === "--cdp-endpoint") config.cdpEndpoint = validateCdpEndpoint(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
@@ -134,6 +144,7 @@ function buildCollectorOptions(config) {
     days: config.days,
     maxRounds: config.maxRounds,
     maxRuntimeMs: config.maxRuntimeMs,
+    groupName: config.groupName || "",
   };
 }
 
@@ -422,5 +433,6 @@ module.exports = {
   parseArgs,
   safeDownloadName,
   validateCdpEndpoint,
+  validateGroupName,
   validateGroupUrl,
 };

@@ -108,7 +108,7 @@ Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile r
 node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results --days 3 --max-runtime-ms 900000
 ```
 
-Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Mọi dòng đầu vào đều có kết quả rõ ràng; dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
+Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Tên từ cột `TÊN HỘI NHÓM` là metadata tin cậy được truyền qua `--group-name`; collector không được thay bằng heading UI như `Giới thiệu` hoặc `Xem bản dịch`. Mọi dòng đầu vào đều có kết quả rõ ràng; dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
 
 ## Format báo cáo handoff
 

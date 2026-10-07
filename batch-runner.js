@@ -218,6 +218,7 @@ function makeRunnerArgs(group, config) {
   return [
     config.runnerPath,
     "--group-url", group.group_url,
+    "--group-name", group.group_name,
     "--collector-path", config.collectorPath,
     "--cdp-endpoint", config.cdpEndpoint,
     "--days", String(config.days),
