@@ -11,6 +11,7 @@ const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_CHILD_TIMEOUT_MS = 120 * 1000;
 const DEFAULT_COLLECTOR_PATH = path.join(__dirname, "fb-group-lead-pilot.js");
 const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
+const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
 const TEMPORARY_DOWNLOAD_PATTERN = /\.(?:crdownload|part|tmp)$/i;
 const SCAN_FILENAME_PATTERN = /^fb_group_scan_(\d+)d_(.+)\.csv$/i;
 
@@ -24,9 +25,11 @@ function usage() {
     "  --collector-path <path>    Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint (default http://127.0.0.1:9222)",
     "  --days <n>                 Collector lookback days (default 30)",
+    "  --capture-mode <mode>      Capture mode: all (default) or classified",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
     "  --max-runtime-ms <n>       Bounded collector runtime (default 900000)",
     "  --results-dir <path>       Results directory",
+    "  --checkpoints-file <path>  Primary JSON group/checkpoint source",
     "  --profile-dir <path>       Dedicated Edge profile directory for instructions",
     "  --download-timeout-ms <n>  Download wait timeout",
     "  --child-timeout-ms <n>     Ingestion/merge subprocess timeout",
@@ -82,9 +85,11 @@ function parseArgs(argv = process.argv.slice(2)) {
     collectorPath: DEFAULT_COLLECTOR_PATH,
     cdpEndpoint: DEFAULT_CDP_ENDPOINT,
     days: 30,
+    captureMode: "all",
     maxRounds: 0,
     maxRuntimeMs: DEFAULT_MAX_RUNTIME_MS,
     resultsDir: DEFAULT_RESULTS_DIR,
+    checkpointsFile: DEFAULT_CHECKPOINTS_FILE,
     profileDir: path.join(os.homedir(), "AppData", "Local", "Microsoft", "Edge", "User Data", "CodexGroupScraper"),
     downloadTimeoutMs: DEFAULT_DOWNLOAD_TIMEOUT_MS,
     childTimeoutMs: DEFAULT_CHILD_TIMEOUT_MS,
@@ -92,8 +97,8 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--group-url", "--group-name", "--collector-path", "--cdp-endpoint", "--days", "--max-rounds",
-    "--max-runtime-ms", "--results-dir", "--profile-dir", "--download-timeout-ms", "--child-timeout-ms",
+    "--group-url", "--group-name", "--collector-path", "--cdp-endpoint", "--days", "--capture-mode", "--max-rounds",
+    "--max-runtime-ms", "--results-dir", "--checkpoints-file", "--profile-dir", "--download-timeout-ms", "--child-timeout-ms",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -114,9 +119,14 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--collector-path") config.collectorPath = path.resolve(value);
     else if (flag === "--cdp-endpoint") config.cdpEndpoint = validateCdpEndpoint(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
+    else if (flag === "--capture-mode") {
+      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      config.captureMode = String(value).toLowerCase();
+    }
     else if (flag === "--max-rounds") config.maxRounds = parsePositiveInteger(value, flag, { allowZero: true });
     else if (flag === "--max-runtime-ms") config.maxRuntimeMs = parsePositiveInteger(value, flag);
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
+    else if (flag === "--checkpoints-file") config.checkpointsFile = path.resolve(value);
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
     else if (flag === "--child-timeout-ms") config.childTimeoutMs = parsePositiveInteger(value, flag);
@@ -142,6 +152,8 @@ function buildEdgeLaunchCommand({ cdpEndpoint = DEFAULT_CDP_ENDPOINT, profileDir
 function buildCollectorOptions(config) {
   return {
     days: config.days,
+    captureMode: config.captureMode || "all",
+    deferClassification: (config.captureMode || "all") !== "classified",
     maxRounds: config.maxRounds,
     maxRuntimeMs: config.maxRuntimeMs,
     groupName: config.groupName || "",
@@ -191,6 +203,107 @@ function parseJsonOutput(stdout) {
     }
   }
   return null;
+}
+
+function normalizeCheckpoint(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error(`checkpoint_timestamp_invalid:${value}`);
+  return date.toISOString();
+}
+
+function readCheckpointDocument(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) throw new Error(`checkpoints_file_not_found:${filePath}`);
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
+  } catch (error) {
+    throw new Error(`checkpoints_file_invalid:${String(error.message || error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || !parsed.groups || typeof parsed.groups !== "object" || Array.isArray(parsed.groups)) {
+    throw new Error("checkpoints_file_groups_invalid");
+  }
+  return { ...parsed, groups: { ...parsed.groups } };
+}
+
+function normalizeCheckpointMap(checkpointMap, groupUrl) {
+  const map = {};
+  for (const [key, value] of Object.entries(checkpointMap || {})) {
+    const canonicalKey = validateGroupUrl(key);
+    if (canonicalKey !== key) throw new Error(`checkpoint_map_key_not_canonical:${key}`);
+    map[canonicalKey] = normalizeCheckpoint(value);
+  }
+  const canonicalGroupUrl = validateGroupUrl(groupUrl);
+  if (!Object.prototype.hasOwnProperty.call(map, canonicalGroupUrl)) map[canonicalGroupUrl] = null;
+  return map;
+}
+
+function loadCheckpointMap(filePath, groupUrl) {
+  const document = readCheckpointDocument(filePath);
+  const map = {};
+  for (const [key, record] of Object.entries(document.groups)) {
+    const canonicalKey = validateGroupUrl(key);
+    if (canonicalKey !== key) throw new Error(`checkpoints_file_group_key_not_canonical:${key}`);
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new Error(`checkpoints_file_group_record_invalid:${key}`);
+    }
+    const recordUrl = validateGroupUrl(record.group_url);
+    if (recordUrl !== canonicalKey) throw new Error(`checkpoints_file_group_url_mismatch:${key}`);
+    if (!String(record.group_name || "").trim()) throw new Error(`checkpoints_file_group_name_missing:${key}`);
+    map[canonicalKey] = normalizeCheckpoint(record.checkpoint);
+  }
+  return normalizeCheckpointMap(map, groupUrl);
+}
+
+function writeCheckpointDocument(filePath, document) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const next = { ...document, version: document.version || 1, updated_at: new Date().toISOString() };
+  fs.writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, filePath);
+  return next;
+}
+
+function updateCheckpointManifest({ filePath, groupUrl, groupName, lastRun }) {
+  const naturalStatuses = new Set(["completed_with_rows", "zero_result_after_checkpoint"]);
+  const recordsSeen = Number(lastRun?.records_seen);
+  if (!lastRun || !naturalStatuses.has(lastRun.run_status) || lastRun.checkpoint_saved !== true
+    || !lastRun.checkpoint || !Number.isFinite(recordsSeen) || recordsSeen <= 0) {
+    return { updated: false, reason: lastRun?.run_status === "stopped" ? "stopped" : "checkpoint_not_saved" };
+  }
+  const canonicalGroupUrl = validateGroupUrl(groupUrl);
+  const checkpoint = normalizeCheckpoint(lastRun.checkpoint);
+  const document = readCheckpointDocument(filePath);
+  const current = document.groups[canonicalGroupUrl] || {};
+  const currentCheckpoint = current.checkpoint ? normalizeCheckpoint(current.checkpoint) : null;
+  if (currentCheckpoint && new Date(checkpoint).getTime() <= new Date(currentCheckpoint).getTime()) {
+    return { updated: false, reason: "checkpoint_not_new", checkpoint: currentCheckpoint };
+  }
+  const nextRecord = {
+    ...current,
+    group_url: canonicalGroupUrl,
+    group_name: String(lastRun.group_name || groupName || current.group_name || "").trim(),
+    checkpoint,
+    last_run: {
+      status: lastRun.run_status || null,
+      scan_started_at: lastRun.scan_started_at || null,
+      completed_at: lastRun.completed_at || null,
+      checkpoint_saved: true,
+      checkpoint,
+      run_id: lastRun.run_id || null,
+      records_seen: recordsSeen,
+      classified_count: Number.isSafeInteger(lastRun.classified_count) ? lastRun.classified_count : null,
+      leads_count: Number.isSafeInteger(lastRun.leads_count) ? lastRun.leads_count : null,
+      audit_count: Number.isSafeInteger(lastRun.audit_count) ? lastRun.audit_count : null,
+      recorded_at: new Date().toISOString(),
+    },
+  };
+  if (!nextRecord.group_name) throw new Error(`checkpoint_group_name_missing:${canonicalGroupUrl}`);
+  const next = writeCheckpointDocument(filePath, {
+    ...document,
+    groups: { ...document.groups, [canonicalGroupUrl]: nextRecord },
+  });
+  return { updated: true, checkpoint, manifest: next };
 }
 
 function runCommand(command, timeoutMs = DEFAULT_CHILD_TIMEOUT_MS) {
@@ -264,27 +377,31 @@ function withTimeout(promise, timeoutMs, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function runBrowser(config) {
+async function runBrowser(config, dependencies = {}) {
   if (!fs.existsSync(config.collectorPath)) throw new Error(`Collector file not found: ${config.collectorPath}`);
   const collectorSource = fs.readFileSync(config.collectorPath, "utf8");
+  const checkpointMap = normalizeCheckpointMap(
+    dependencies.checkpointMap || config.checkpointMap || loadCheckpointMap(config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE, config.groupUrl),
+    config.groupUrl,
+  );
   fs.mkdirSync(config.resultsDir, { recursive: true });
   const stagingDir = fs.mkdtempSync(path.join(config.resultsDir, ".runner-staging-"));
   const files = { stagingDir, downloads: [] };
   let browser;
   let page;
   let downloadHandler;
-  let keepBrowserOpen = false;
+  let keepPageOpen = false;
   try {
-    const playwright = loadPlaywright();
+    const playwright = dependencies.playwright || loadPlaywright();
     browser = await playwright.chromium.connectOverCDP(config.cdpEndpoint);
     const contexts = browser.contexts();
     if (!contexts.length) throw new Error("No browser context available over CDP");
     const context = contexts[0];
     page = await context.newPage();
     await page.goto(config.groupUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    const userAction = await detectUserAction(page);
+    const userAction = await (dependencies.detectUserAction || detectUserAction)(page);
     if (userAction) {
-      keepBrowserOpen = true;
+      keepPageOpen = true;
       return { status: "needs_user_action", needs_user_action: userAction, files };
     }
 
@@ -305,12 +422,13 @@ async function runBrowser(config) {
     };
     page.on("download", downloadHandler);
 
-    await page.evaluate(({ source, options }) => {
+    await page.evaluate(({ source, options, checkpoints }) => {
+      globalThis.__FB_GROUP_CHECKPOINTS__ = checkpoints;
       globalThis.__FB_GROUP_LEAD_PILOT_OPTIONS__ = options;
       globalThis.__FB_GROUP_LEAD_PILOT_ERROR__ = null;
       globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__ = null;
       (0, eval)(source);
-    }, { source: collectorSource, options: buildCollectorOptions(config) });
+    }, { source: collectorSource, options: buildCollectorOptions(config), checkpoints: checkpointMap });
 
     const completion = page.evaluate(async () => {
       const run = globalThis.__FB_GROUP_LEAD_PILOT_RUN__;
@@ -328,10 +446,11 @@ async function runBrowser(config) {
       "Collector timed out before completion",
     );
     if (completionResult.error) throw new Error(completionResult.error);
-    const pairReady = await waitFor(
+    const waitForPair = dependencies.waitForPair || (async ({ stagingDir, timeoutMs }) => waitFor(
       async () => Boolean(findDownloadPair(fs.readdirSync(stagingDir))),
-      config.downloadTimeoutMs,
-    );
+      timeoutMs,
+    ));
+    const pairReady = await waitForPair({ stagingDir, timeoutMs: config.downloadTimeoutMs });
     await Promise.all(downloadTasks);
     const pair = findDownloadPair(fs.readdirSync(stagingDir));
     if (!pairReady || !pair) throw new Error("Expected scan CSV and manifest downloads were not both found");
@@ -352,7 +471,8 @@ async function runBrowser(config) {
       };
     }
 
-    const ingestion = runCommand(makeIngestCommand({ sourceDir: stagingDir, resultsDir: config.resultsDir }), config.childTimeoutMs);
+    const executeCommand = dependencies.runCommand || runCommand;
+    const ingestion = executeCommand(makeIngestCommand({ sourceDir: stagingDir, resultsDir: config.resultsDir }), config.childTimeoutMs);
     files.ingestion = ingestion.json || { exitCode: ingestion.exitCode, stderr: ingestion.stderr };
     if (ingestion.exitCode !== 0) throw new Error(`Ingestion failed${ingestion.timedOut ? " (timeout)" : ""}: ${ingestion.stderr || ingestion.stdout}`);
     const ingestionEntry = ingestion.json?.entries?.find((entry) => entry.csv_file === pair.csv);
@@ -360,9 +480,16 @@ async function runBrowser(config) {
       throw new Error(`Ingestion did not accept ${pair.csv}`);
     }
     const rawDir = path.join(config.resultsDir, manifest.run_id, "raw");
-    const merge = runCommand(makeMergeCommand({ rawDir, days: config.days }), config.childTimeoutMs);
+    const merge = executeCommand(makeMergeCommand({ rawDir, days: config.days }), config.childTimeoutMs);
     files.merge = merge.json || { exitCode: merge.exitCode, stderr: merge.stderr };
     if (merge.exitCode !== 0) throw new Error(`Merge failed${merge.timedOut ? " (timeout)" : ""}: ${merge.stderr || merge.stdout}`);
+    files.last_run = completionResult.lastRun || null;
+    files.checkpoint_update = updateCheckpointManifest({
+      filePath: config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE,
+      groupUrl: config.groupUrl,
+      groupName: config.groupName,
+      lastRun: completionResult.lastRun,
+    });
     return {
       status: manifest.status === "zero_result" ? "zero_result" : "completed",
       run_id: manifest.run_id,
@@ -374,12 +501,12 @@ async function runBrowser(config) {
     };
   } catch (error) {
     if (/login|captcha|checkpoint|security|authentication/i.test(String(error.message || error))) {
-      keepBrowserOpen = true;
+      keepPageOpen = true;
     }
     throw error;
   } finally {
     if (page && downloadHandler) page.off("download", downloadHandler);
-    if (!keepBrowserOpen) await browser?.close().catch(() => {});
+    if (!keepPageOpen && page?.close) await page.close().catch(() => {});
   }
 }
 
@@ -427,11 +554,14 @@ module.exports = {
   buildEdgeLaunchCommand,
   findDownloadPair,
   isScanFilename,
+  loadCheckpointMap,
   makeIngestCommand,
   makeMergeCommand,
   manifestFilenameFor,
   parseArgs,
+  runBrowser,
   safeDownloadName,
+  updateCheckpointManifest,
   validateCdpEndpoint,
   validateGroupName,
   validateGroupUrl,

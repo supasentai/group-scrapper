@@ -258,9 +258,21 @@ function qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, rowCount) {
   return qualityFlags;
 }
 
+function classificationOutputs(all) {
+  const leads = all.filter((row) =>
+    ["potential_customer", "experienced_customer"].includes(row.segment)
+      && Number(row.intent_score) >= 45
+      && Number(row.seeding_risk) <= 59
+  );
+  return { classified: all, leads, audit: all.filter((row) => !leads.includes(row)) };
+}
+
 function main() {
-  const dir = path.resolve(process.argv[2] || path.join(__dirname, "results"));
-  const days = Number(process.argv[3] || 30);
+  const args = process.argv.slice(2);
+  const classify = args.includes("--classify");
+  const positional = args.filter((arg) => arg !== "--classify");
+  const dir = path.resolve(positional[0] || path.join(__dirname, "results"));
+  const days = Number(positional[1] || 30);
   const now = new Date();
   const cutoff = new Date(now.getTime() - days * 86_400_000);
   const sourceFiles = chooseSourceFiles(dir);
@@ -268,25 +280,28 @@ function main() {
 
   const raw = sourceFiles.flatMap((name) => parseCsv(fs.readFileSync(path.join(dir, name), "utf8")));
   const normalized = dedupe(normalizeRows(raw, now));
-  const inWindow = normalized.filter((row) => row._date && row._date >= cutoff);
+  const dateQualified = normalized.filter((row) => row._date && row._date >= cutoff);
   const unresolved = normalized.filter((row) => !row._date);
   const old = normalized.filter((row) => row._date && row._date < cutoff);
-  const all = inWindow.map(({ _date, _index, ...row }) => row);
-  const leads = all.filter((row) =>
-    ["potential_customer", "experienced_customer"].includes(row.segment)
-      && Number(row.intent_score) >= 45
-      && Number(row.seeding_risk) <= 59
-  );
-  const audit = all.filter((row) => !leads.includes(row));
+  // Raw/all retains unresolved-time rows for QA. Only explicitly classified
+  // outputs use the date-qualified subset.
+  const all = normalized
+    .filter((row) => !row._date || row._date >= cutoff)
+    .map(({ _date, _index, ...row }) => row);
+  const classified = classify ? classificationOutputs(dateQualified.map(({ _date, _index, ...row }) => row)) : null;
   const stamp = now.toISOString().slice(0, 10).replaceAll("-", "");
   const outputs = {
     all: path.join(dir, `fb_group_${days}d_repaired_all_${stamp}_utf8.csv`),
-    leads: path.join(dir, `fb_group_${days}d_repaired_leads_${stamp}_utf8.csv`),
-    audit: path.join(dir, `fb_group_${days}d_repaired_audit_${stamp}_utf8.csv`),
   };
   writeCsv(outputs.all, all);
-  writeCsv(outputs.leads, leads);
-  writeCsv(outputs.audit, audit);
+  if (classified) {
+    outputs.classified = path.join(dir, `fb_group_${days}d_classified_${stamp}_utf8.csv`);
+    outputs.leads = path.join(dir, `fb_group_${days}d_repaired_leads_${stamp}_utf8.csv`);
+    outputs.audit = path.join(dir, `fb_group_${days}d_repaired_audit_${stamp}_utf8.csv`);
+    writeCsv(outputs.classified, classified.classified);
+    writeCsv(outputs.leads, classified.leads);
+    writeCsv(outputs.audit, classified.audit);
+  }
   const sourceTypeCounts = {};
   for (const row of all) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
   const qualityFlagCounts = {};
@@ -301,8 +316,10 @@ function main() {
     raw_rows: raw.length,
     deduped_rows: normalized.length,
     in_window_rows: all.length,
-    lead_rows: leads.length,
-    audit_rows: audit.length,
+    date_qualified_rows: dateQualified.length,
+    classification_mode: classify ? "explicit" : "raw",
+    lead_rows: classified ? classified.leads.length : null,
+    audit_rows: classified ? classified.audit.length : null,
     dropped_old_rows: old.length,
     unresolved_time_rows: unresolved.length,
     source_type_counts: sourceTypeCounts,
@@ -318,4 +335,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { HEADERS, parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport, writeCsv };
+module.exports = { HEADERS, classificationOutputs, parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport, writeCsv };

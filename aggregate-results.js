@@ -23,6 +23,7 @@ function usage() {
     "Options:",
     "  --extra-run-id <run_id>  Include an explicitly rerun run (repeatable)",
     "  --days <n>               In-window lookback for the aggregate report (default 30)",
+    "  --classify               Explicitly create classified/leads/audit outputs",
   ].join("\n");
 }
 
@@ -45,12 +46,17 @@ function parseArgs(argv = process.argv.slice(2)) {
     resultsDir: DEFAULT_RESULTS_DIR,
     extraRunIds: [],
     days: DEFAULT_DAYS,
+    classify: false,
     help: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--help" || flag === "-h") {
       config.help = true;
+      continue;
+    }
+    if (flag === "--classify") {
+      config.classify = true;
       continue;
     }
     const value = argv[index + 1];
@@ -183,6 +189,7 @@ function markdownReport(report) {
     `- Batch manifest: \`${report.batch_manifest_path}\``,
     `- Generated: ${report.generated_at}`,
     `- Status: **${report.status}**`,
+    `- Classification mode: **${report.classification_mode}**`,
     `- Input rows: ${report.input_row_count}`,
     `- Source run IDs: ${report.source_run_ids.join(", ") || "none"}`,
     "",
@@ -198,6 +205,7 @@ function markdownReport(report) {
     `- Raw completed rows: ${report.raw_rows}`,
     `- Deduped rows: ${report.deduped_rows}`,
     `- In-window rows: ${report.in_window_rows}`,
+    `- Date-qualified rows: ${report.date_qualified_rows}`,
     `- Anonymous rows: ${report.anonymous_rows}`,
     `- Missing profile rows: ${report.missing_profile_rows}`,
     "",
@@ -307,14 +315,17 @@ function runAggregate(config, dependencies = {}) {
   const normalized = mergeResults.normalizeRows(rawRows, now);
   const deduped = mergeResults.dedupe(normalized);
   const cutoff = new Date(now.getTime() - config.days * 86_400_000);
-  const inWindow = deduped.filter((row) => row._date && row._date >= cutoff);
+  const dateQualified = deduped.filter((row) => row._date && row._date >= cutoff);
   const unresolved = deduped.filter((row) => !row._date);
   const old = deduped.filter((row) => row._date && row._date < cutoff);
-  const all = inWindow.map(({ _date, _index, ...row }) => row);
-  const leads = all.filter((row) => ["potential_customer", "experienced_customer"].includes(row.segment)
-    && Number(row.intent_score) >= 45
-    && Number(row.seeding_risk) <= 59);
-  const audit = all.filter((row) => !leads.includes(row));
+  // Raw/all retains unresolved-time rows for QA; explicit classification is
+  // limited to rows that can be proven to be inside the date window.
+  const all = deduped
+    .filter((row) => !row._date || row._date >= cutoff)
+    .map(({ _date, _index, ...row }) => row);
+  const classified = config.classify
+    ? mergeResults.classificationOutputs(dateQualified.map(({ _date, _index, ...row }) => row))
+    : null;
   const sourceTypeCounts = {};
   for (const row of all) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
   const qualityFlagCounts = {};
@@ -326,14 +337,18 @@ function runAggregate(config, dependencies = {}) {
   const stamp = now.toISOString().replace(/[-:.]/g, "");
   const outputs = {
     all: path.join(resultsDir, `fb_group_aggregate_all_${stamp}_utf8.csv`),
-    leads: path.join(resultsDir, `fb_group_aggregate_leads_${stamp}_utf8.csv`),
-    audit: path.join(resultsDir, `fb_group_aggregate_audit_${stamp}_utf8.csv`),
     report_json: path.join(resultsDir, `aggregate_report_${stamp}.json`),
     report_md: path.join(resultsDir, `aggregate_report_${stamp}.md`),
   };
   fs.mkdirSync(resultsDir, { recursive: true });
-  mergeResults.writeCsv(outputs.leads, leads);
-  mergeResults.writeCsv(outputs.audit, audit);
+  if (classified) {
+    outputs.classified = path.join(resultsDir, `fb_group_aggregate_classified_${stamp}_utf8.csv`);
+    outputs.leads = path.join(resultsDir, `fb_group_aggregate_leads_${stamp}_utf8.csv`);
+    outputs.audit = path.join(resultsDir, `fb_group_aggregate_audit_${stamp}_utf8.csv`);
+    mergeResults.writeCsv(outputs.classified, classified.classified);
+    mergeResults.writeCsv(outputs.leads, classified.leads);
+    mergeResults.writeCsv(outputs.audit, classified.audit);
+  }
   const releasedStatuses = new Set(["completed_with_rows", "zero_result"]);
   const pendingStatuses = new Set(["needs_user_action", "stopped", "not_run", "failed"]);
   const releasedGroups = groupStates.filter((state) => releasedStatuses.has(state.status));
@@ -357,6 +372,10 @@ function runAggregate(config, dependencies = {}) {
     raw_rows: rawRows.length,
     deduped_rows: deduped.length,
     in_window_rows: all.length,
+    date_qualified_rows: dateQualified.length,
+    classification_mode: config.classify ? "explicit" : "raw",
+    lead_rows: classified ? classified.leads.length : null,
+    audit_rows: classified ? classified.audit.length : null,
     dropped_old_rows: old.length,
     unresolved_time_rows: unresolved.length,
     source_type_counts: sourceTypeCounts,

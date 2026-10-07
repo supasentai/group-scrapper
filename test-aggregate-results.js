@@ -54,7 +54,13 @@ try {
     published_at_text: "2026-10-07T09:00:00.000Z",
     text_excerpt: "Tài khoản đã xác minh nổi bật Dr erham.last yearGreat results. I am considering a facelift and need recommendations. Has anyone had this procedure?",
   };
-  writeRun("run-alpha", "Alpha Group", "https://www.facebook.com/groups/alpha/", "completed", [alphaRow, { ...alphaRow }]);
+  const unresolvedAlphaRow = {
+    ...alphaRow,
+    content_url: "https://www.facebook.com/groups/alpha/posts/2/",
+    published_at_text: "time unavailable",
+    text_excerpt: "A captured row whose timestamp needs manual review.",
+  };
+  writeRun("run-alpha", "Alpha Group", "https://www.facebook.com/groups/alpha/", "completed", [alphaRow, { ...alphaRow }, unresolvedAlphaRow]);
   writeRun("run-zero", "Zero Group", "https://www.facebook.com/groups/zero/", "zero_result", []);
   writeRun("run-stopped", "Stopped Group", "https://www.facebook.com/groups/stopped/", "stopped", [{
     ...alphaRow,
@@ -84,9 +90,15 @@ try {
   const report = aggregate.runAggregate(config, { now: new Date("2026-10-07T12:00:00.000Z") });
   assert.equal(report.status, "completed_with_errors");
   assert.equal(report.input_row_count, 6);
-  assert.equal(report.raw_rows, 3);
-  assert.equal(report.deduped_rows, 2);
-  assert.equal(report.in_window_rows, 2);
+  assert.equal(report.raw_rows, 4);
+  assert.equal(report.deduped_rows, 3);
+  assert.equal(report.in_window_rows, 3);
+  assert.equal(report.date_qualified_rows, 2);
+  assert.equal(report.unresolved_time_rows, 1);
+  assert.equal(report.classification_mode, "raw");
+  assert.equal(report.lead_rows, null);
+  assert.equal(report.audit_rows, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(report.outputs, "leads"), false);
   assert.deepEqual(report.source_run_ids.sort(), ["run-alpha", "run-extra", "run-stopped", "run-zero"]);
   assert.equal(report.artifact_issues.length, 1);
   assert.equal(report.artifact_issues[0].run_id, "run-missing");
@@ -100,13 +112,29 @@ try {
   assert.equal(report.pending_groups.length, 3);
   for (const output of Object.values(report.outputs)) assert.equal(fs.existsSync(output), true);
   const masterRows = require("./merge-results.js").parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
-  assert.equal(masterRows.length, 2);
+  assert.equal(masterRows.length, 3);
   assert.ok(masterRows.every((row) => ["Alpha Group", "Extra Group"].includes(row.group_name)));
+  assert.ok(masterRows.some((row) => row.published_at_text === "time unavailable"));
   assert.ok(masterRows.every((row) => !row.text_excerpt.includes("Tài khoản đã xác minh")));
-  const aggregateLead = masterRows.find((row) => row.group_name === "Alpha Group");
+  const aggregateLead = masterRows.find((row) => row.group_name === "Alpha Group" && row.doctor_name);
   assert.equal(aggregateLead.doctor_name, "Dr erham");
   assert.match(aggregateLead.text_excerpt, /Dr erham\.last year\. Great results\./);
   assert.doesNotMatch(aggregateLead.text_excerpt, /last yearGreat/);
+
+  const classifiedReport = aggregate.runAggregate(aggregate.parseArgs([
+    "--batch-manifest", batchManifestPath,
+    "--results-dir", resultsDir,
+    "--extra-run-id", "run-extra",
+    "--days", "30",
+    "--classify",
+  ]), { now: new Date("2026-10-07T12:00:00.000Z") });
+  assert.equal(classifiedReport.classification_mode, "explicit");
+  assert.equal(classifiedReport.lead_rows + classifiedReport.audit_rows, classifiedReport.date_qualified_rows);
+  assert.equal(fs.existsSync(classifiedReport.outputs.classified), true);
+  assert.equal(fs.existsSync(classifiedReport.outputs.leads), true);
+  assert.equal(fs.existsSync(classifiedReport.outputs.audit), true);
+  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.all, "utf8")).length, 3);
+  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.classified, "utf8")).length, 2);
 
   writeRun("run-rerun", "Stopped Group", "https://www.facebook.com/groups/stopped/", "completed", [{
     ...alphaRow,

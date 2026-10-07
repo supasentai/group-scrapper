@@ -52,17 +52,18 @@ Công cụ không mở từng profile, không tìm email/số điện thoại v�
 
 ```powershell
 node .\merge-results.js .\results\30d_YYYYMMDD 30
+node .\merge-results.js .\results\30d_YYYYMMDD 30 --classify
 ```
 
-Bộ gom là bước tùy chọn cho các đợt mới: giữ lại danh tính, chuẩn hóa nội dung, suy ra bài/bình luận khi file nguồn không có permalink bình luận, loại dòng ngoài khoảng ngày và xuất ba file `repaired_all`, `repaired_leads`, `repaired_audit` cùng một `quality_report`. Nó chỉ tạo file mới, không sửa file CSV nguồn. Nếu quét 365 ngày, thay cả thư mục và tham số cuối thành `365`.
+Bộ gom là bước tùy chọn cho các đợt mới: giữ lại danh tính, chuẩn hóa nội dung, suy ra bài/bình luận khi file nguồn không có permalink bình luận, loại dòng ngoài khoảng ngày và mặc định chỉ xuất `repaired_all` cùng `quality_report`. Classification là bước riêng và chỉ tạo `classified`, `repaired_leads`, `repaired_audit` khi thêm `--classify`. Nó chỉ tạo file mới, không sửa file CSV nguồn. Nếu quét 365 ngày, thay cả thư mục và tham số cuối thành `365`.
 
-Lưu ý: phiên bản hiện tại chưa tự đọc spreadsheet, tự chuyển tab hoặc tự gộp nhiều group. Spreadsheet là danh sách đầu vào; mỗi link vẫn được xử lý độc lập để giới hạn phạm vi và giúp truy vết đúng group nguồn.
+Luồng spreadsheet ở trên là legacy/manual. Luồng batch chính đọc `checkpoints.json`, tự chạy tuần tự các group đã bật và vẫn giữ spreadsheet CSV qua `--groups-file` để tương thích.
 
 ## Checkpoint quét hằng ngày
 
 - Lần quét đầu tiên dùng `days` (mặc định 30 ngày).
 - Checkpoint chính được lưu trong `checkpoints.json` ở thư mục dự án; `localStorage` của Edge chỉ còn là cơ chế dự phòng cho các lượt chạy cũ.
-- Sau mỗi lượt quét hoàn tất tự nhiên, agent phải ghi `scan_started_at` vào checkpoint manifest bằng `checkpoint-tools.js`.
+- Batch/browser runner tự inject map checkpoint từ `checkpoints.json` trước khi chạy collector và tự ghi checkpoint cùng `last_run` sau lượt tự nhiên có `checkpoint_saved=true`.
 - Lần quét kế tiếp chỉ giữ nội dung có thời gian từ checkpoint đó trở đi. Ví dụ lần trước bắt đầu lúc 09:00 thì lần sau quét từ 09:00 trở đi.
 - Nếu bấm **Dừng & xuất CSV**, checkpoint không được cập nhật để tránh bỏ sót dữ liệu.
 - Nếu trang không trả về bản ghi nào, checkpoint cũng không được cập nhật để tránh tiến mốc khi Facebook chưa tải nội dung hoặc đã thay đổi DOM.
@@ -78,16 +79,16 @@ node .\checkpoint-tools.js record-run "https://www.facebook.com/groups/<group-id
 node .\checkpoint-tools.js export-map
 ```
 
-- Trước khi dán script vào Console, agent đọc `checkpoints.json` và inject toàn bộ map (kể cả giá trị `null`) vào `window.__FB_GROUP_CHECKPOINTS__`. Khi đó file là nguồn chính; một key có giá trị `null` sẽ không bị checkpoint cũ trong `localStorage` ghi đè.
-- Sau khi script hoàn tất, agent đọc `window.__FB_GROUP_LEAD_PILOT_LAST_RUN__`. Chỉ khi `checkpoint_saved=true` mới ghi checkpoint vào manifest.
-- Agent ghi lại cả trạng thái lượt chạy bằng `checkpoint-tools.js record-run`. Trạng thái `zero_result_after_checkpoint` nghĩa là đã quét nhưng không có dòng mới; trạng thái `no_records_seen` nghĩa là DOM không trả về bản ghi và không được tiến checkpoint.
+- Runner inject toàn bộ map checkpoint (kể cả giá trị `null`) vào `window.__FB_GROUP_CHECKPOINTS__`; khi đó file là nguồn chính và checkpoint cũ trong `localStorage` không ghi đè được giá trị từ file.
+- Runner đọc `window.__FB_GROUP_LEAD_PILOT_LAST_RUN__`; chỉ `checkpoint_saved=true` mới tiến checkpoint. `stopped` và `no_records_seen` giữ nguyên mốc cũ.
+- `last_run` được ghi cùng checkpoint mới để truy vết trạng thái, số record và `run_id`.
 - Đổi profile hoặc xóa dữ liệu site không còn làm mất checkpoint chính trong dự án, nhưng vẫn có thể làm mất fallback `localStorage`.
 
 Khi hoàn thành, trình duyệt tải một file scan và manifest tương ứng:
 
 - `fb_group_scan_<days>d_*.csv`: toàn bộ dòng raw/all của một group, kể cả dòng sẽ được đưa vào audit.
 - `fb_group_scan_<days>d_*.manifest.json`: metadata ISO UTC của cùng lượt chạy (`group_url`, `group_name`, `run_id`, thời gian, `row_count`, `status`, `output_file`). Lượt không có dòng dùng `status=zero_result`.
-- `merge-results.js`: bước downstream tùy chọn để tạo `repaired_all`, `repaired_leads`, `repaired_audit` và `quality_report`.
+- `merge-results.js`: bước downstream raw-preserving; thêm `--classify` nếu cần tạo `classified`, `repaired_leads`, `repaired_audit` và `quality_report`.
 
 Kể cả khi một nhóm không có dòng mới, script vẫn tải file scan chỉ có header. Vì vậy có thể phân biệt nhóm đã quét nhưng `zero result` với nhóm chưa chạy.
 
@@ -126,21 +127,36 @@ node .\browser-runner.js `
   --results-dir .\results
 ```
 
-Runner mở group root, inject collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Login wall, checkpoint, CAPTCHA hoặc thiếu dependency trả JSON `needs_user_action`/`error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
+Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`), inject checkpoint map và collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Sau khi hoàn tất an toàn, runner chỉ đóng page/tab do chính nó tạo và không đóng Edge hoặc các tab đang có; khi gặp login wall, checkpoint, CAPTCHA hoặc `needs_user_action`, page được giữ mở để người dùng xử lý. Thiếu dependency trả JSON `error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
 
 ### Batch Runner Phase 2
 
-`batch-runner.js` xử lý tuần tự danh sách CSV có cột `TÊN HỘI NHÓM` và `LINK`, dùng lại browser runner cho từng group:
+`batch-runner.js` mặc định xử lý tuần tự `checkpoints.json`, trong đó `groups` là object keyed by canonical group URL:
+
+```json
+{
+  "groups": {
+    "https://www.facebook.com/groups/<group-id>/": {
+      "group_url": "https://www.facebook.com/groups/<group-id>/",
+      "group_name": "Tên group",
+      "enabled": true,
+      "checkpoint": null
+    }
+  }
+}
+```
 
 ```powershell
 node .\batch-runner.js `
-  --groups-file .\groups.csv `
+  --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
   --days 3 `
   --max-runtime-ms 900000
 ```
 
-Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Tên group từ cột `TÊN HỘI NHÓM` được truyền tin cậy vào manifest; không dùng heading UI trên Facebook để thay thế. Dòng trống, URL sai và URL trùng được ghi rõ là `skipped_blank`, `skipped_invalid` hoặc `skipped_duplicate`. Mỗi group đã chạy chỉ được ghi `zero_result` khi browser runner trả cặp artifact hợp lệ với manifest `status=zero_result`; thiếu hoặc hỏng manifest là `failed`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
+`captureMode=all` là mặc định: collector chỉ áp dụng checkpoint/date window, dọn UI và technical dedupe; noise, seed-like, low-intent và text ngắn vẫn nằm trong scan raw. Classification chỉ là bước sau, dùng `--classify` ở aggregator/merge.
+
+Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
 ### Cross-group Aggregation Phase 3
 
@@ -151,9 +167,14 @@ node .\aggregate-results.js `
   --batch-manifest .\results\batch_manifest_<id>.json `
   --results-dir .\results `
   --extra-run-id scan_3d_1791368600975
+
+node .\aggregate-results.js `
+  --batch-manifest .\results\batch_manifest_<id>.json `
+  --results-dir .\results `
+  --classify
 ```
 
-Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách. Kết quả gồm `fb_group_aggregate_all`, `leads`, `audit` và `aggregate_report` JSON/Markdown với group status, released/pending groups, source run IDs, số dòng raw/deduped/in-window, quality flags, anonymous và missing-profile counts.
+Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Mặc định kết quả raw-preserving gồm `fb_group_aggregate_all` và report; các row unresolved-time vẫn nằm trong `all` và được đếm riêng. Thêm `--classify` để tạo thêm `classified`, `leads` và `audit` từ phần date-qualified mà không thay đổi `all`. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách.
 
 ### Batch Reliability Phase 4
 
@@ -161,7 +182,7 @@ Batch có thể resume bằng manifest trước đó. Các group `completed_with
 
 ```powershell
 node .\batch-runner.js `
-  --groups-file .\groups.csv `
+  --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
   --resume-manifest .\results\batch_manifest_<previous>.json `
   --retry-status stopped,failed
@@ -182,7 +203,7 @@ Chỉ staging directory cũ, không được tham chiếu và không còn hiện
 
 ```powershell
 node .\cycle-runner.js `
-  --groups-file .\groups.csv `
+  --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
   --max-runtime-ms 900000 `
   --child-timeout-ms 1020000 `

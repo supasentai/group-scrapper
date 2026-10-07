@@ -40,6 +40,8 @@
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
+    captureMode: "all",
+    deferClassification: true,
     minimumIntentScore: 45,
     maximumSeedingRisk: 59,
     useCheckpoint: true,
@@ -366,8 +368,10 @@
       const published = record.published_at
         ? new Date(record.published_at).getTime()
         : parseFacebookTime(record.published_at_text)?.getTime();
-      if (!record.published_at && record.published_at_text && Number.isNaN(published)) return false;
-      if (!published || Number.isNaN(published)) return !record.published_at_text;
+      // Keep unresolved timestamps for downstream QA instead of silently
+      // dropping otherwise valid captured records. The row carries a quality
+      // flag and can be handled explicitly by aggregation/classification.
+      if (!published || Number.isNaN(published)) return true;
       return published >= threshold;
     });
   }
@@ -863,7 +867,7 @@
         const timeText = findTimeText(article, postUrl);
         const rawText = getOwnArticleText(article);
         const text = cleanSourceText(rawText, author.name, timeText);
-        if (!text || text.length < 12) continue;
+        if (!text) continue;
 
         const sourceType = inferSourceType(isPost, contentLink.sourceType, articleDepth);
         const contentUrl = sourceType === "post" ? postUrl : contentLink.url || postUrl;
@@ -894,9 +898,62 @@
     return records;
   }
 
+  function captureRecords(rawRecords, groupContext = {}) {
+    const captured = new Map();
+    for (const [index, rawRecord] of (rawRecords || []).entries()) {
+      const text = sanitizeRecordText(rawRecord);
+      // Empty/UI-only records are the only content-level rows rejected here.
+      // Short text is valid evidence and must remain in the capture output.
+      if (!text) continue;
+      const sourceType = normalizeSpace(rawRecord.source_type).toLowerCase() || "post";
+      const postUrl = rawRecord.post_url || rawRecord.content_url || "";
+      const commentUrl = rawRecord.comment_url || (sourceType === "post" ? "" : postUrl);
+      const contentUrl = sourceType === "post" ? postUrl : (commentUrl || postUrl);
+      const parsedTime = rawRecord.published_at
+        ? new Date(rawRecord.published_at)
+        : parseFacebookTime(rawRecord.published_at_text);
+      const flags = String(rawRecord.data_quality_flags || "")
+        .split(/[;|]/)
+        .map((flag) => flag.trim())
+        .filter(Boolean);
+      const addFlag = (flag) => {
+        if (!flags.includes(flag)) flags.push(flag);
+      };
+      if (!rawRecord.name) addFlag("author_missing");
+      if (!rawRecord.profile_url && !rawRecord.is_anonymous) addFlag("profile_missing");
+      if (!parsedTime || Number.isNaN(parsedTime.getTime())) addFlag("missing_or_unparsed_time");
+      const key = rawRecord.key || [
+        contentUrl,
+        sourceType,
+        rawRecord.profile_url || rawRecord.name || "unknown",
+        textFingerprint(text),
+      ].join("::");
+      if (captured.has(key)) continue;
+      captured.set(key, {
+        group_name: groupContext.groupName || rawRecord.group_name || "",
+        group_url: groupContext.groupUrl || rawRecord.group_url || "",
+        content_url: contentUrl,
+        name: rawRecord.name || "",
+        profile_url: rawRecord.profile_url || "",
+        is_anonymous: Boolean(rawRecord.is_anonymous),
+        source_type: sourceType,
+        post_url: postUrl,
+        comment_url: commentUrl,
+        published_at: parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime.toISOString() : "",
+        published_at_text: parsedTime && !Number.isNaN(parsedTime.getTime())
+          ? parsedTime.toISOString()
+          : normalizeSpace(rawRecord.published_at_text),
+        text_excerpt: text,
+        data_quality_flags: flags.join(";"),
+        _index: index,
+      });
+    }
+    return [...captured.values()];
+  }
+
   function classifyRecords(rawRecords, groupContext = {}) {
     const candidateRecords = inferDuplicatePostComments(rawRecords.filter((record) =>
-      record && normalizeSpace(record.text)
+      record && normalizeSpace(record.text ?? record.text_excerpt)
     ).map((record) => ({
       ...record,
       text: sanitizeRecordText(record),
@@ -1051,10 +1108,10 @@
       <div style="font-size:15px;font-weight:700;margin-bottom:8px">FB Lead Pilot · quét tăng dần</div>
       <div id="fb-lead-pilot-status" style="color:#cbd5e1;margin-bottom:10px">Đang khởi tạo…</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">
-        <div>Đã đọc: <b id="fb-lead-pilot-total">0</b></div>
-        <div>Lead: <b id="fb-lead-pilot-leads" style="color:#34d399">0</b></div>
-        <div>Seeding: <b id="fb-lead-pilot-seeds" style="color:#fbbf24">0</b></div>
-        <div>Nhiễu: <b id="fb-lead-pilot-noise">0</b></div>
+        <div>Đã bắt: <b id="fb-lead-pilot-total">0</b></div>
+        <div>Post: <b id="fb-lead-pilot-leads" style="color:#34d399">0</b></div>
+        <div>Comment: <b id="fb-lead-pilot-seeds" style="color:#fbbf24">0</b></div>
+        <div>Reply: <b id="fb-lead-pilot-noise">0</b></div>
       </div>
       <button id="fb-lead-pilot-stop" style="width:100%;border:0;border-radius:8px;padding:9px;background:#dc2626;color:white;font-weight:700;cursor:pointer">Dừng & xuất CSV</button>
     `;
@@ -1064,16 +1121,12 @@
       hud.querySelector("#fb-lead-pilot-stop").disabled = true;
     });
     return {
-      update(message, classified) {
-        const counts = classified.reduce((acc, row) => {
-          acc[row.segment] = (acc[row.segment] || 0) + 1;
-          return acc;
-        }, {});
+      update(message, capturedRows) {
         hud.querySelector("#fb-lead-pilot-status").textContent = message;
-        hud.querySelector("#fb-lead-pilot-total").textContent = classified.length;
-        hud.querySelector("#fb-lead-pilot-leads").textContent = (counts.potential_customer || 0) + (counts.experienced_customer || 0);
-        hud.querySelector("#fb-lead-pilot-seeds").textContent = counts.seed_suspect || 0;
-        hud.querySelector("#fb-lead-pilot-noise").textContent = counts.noise || 0;
+        hud.querySelector("#fb-lead-pilot-total").textContent = capturedRows.length;
+        hud.querySelector("#fb-lead-pilot-leads").textContent = capturedRows.filter((row) => row.source_type === "post").length;
+        hud.querySelector("#fb-lead-pilot-seeds").textContent = capturedRows.filter((row) => row.source_type === "comment").length;
+        hud.querySelector("#fb-lead-pilot-noise").textContent = capturedRows.filter((row) => row.source_type === "reply").length;
       },
       finish(message) {
         hud.querySelector("#fb-lead-pilot-status").textContent = message;
@@ -1151,7 +1204,7 @@
       for (const record of collectRenderedRecords()) records.set(record.key, record);
 
       const allRecords = [...records.values()];
-      const classified = classifyRecords(filterRecordsSince(allRecords, cutoff), groupContext);
+      const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff), groupContext);
       // Dùng toàn bộ dữ liệu đã thấy để biết lúc nào đã cuộn qua mốc checkpoint.
       // Nếu chỉ nhìn dữ liệu sau cutoff thì điều kiện này không bao giờ đúng.
       const recordDates = allRecords
@@ -1161,7 +1214,7 @@
         .filter((date) => date && !Number.isNaN(date.getTime()));
       const oldest = recordDates.length ? new Date(Math.min(...recordDates.map(Number))) : null;
       oldPostRounds = oldest && oldest < cutoff ? oldPostRounds + 1 : 0;
-      hud.update(`Vòng ${round} · bài cũ nhất: ${oldest ? oldest.toLocaleDateString() : "chưa xác định"}`, classified);
+      hud.update(`Vòng ${round} · bài cũ nhất: ${oldest ? oldest.toLocaleDateString() : "chưa xác định"}`, capturedRows);
 
       const before = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
       window.scrollTo({ top: before, behavior: "smooth" });
@@ -1181,7 +1234,11 @@
     }
 
     for (const record of collectRenderedRecords()) records.set(record.key, record);
-    const classified = classifyRecords(filterRecordsSince([...records.values()], cutoff), groupContext);
+    const filteredRecords = filterRecordsSince([...records.values()], cutoff);
+    const capturedRows = captureRecords(filteredRecords, groupContext);
+    const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
+      && CONFIG.deferClassification === false;
+    const classified = shouldClassify ? classifyRecords(capturedRows, groupContext) : [];
     const leads = classified.filter((row) =>
       ["potential_customer", "experienced_customer"].includes(row.segment) &&
       row.intent_score >= CONFIG.minimumIntentScore &&
@@ -1189,9 +1246,8 @@
     );
     const audit = classified.filter((row) => !leads.includes(row));
 
-    // Collector chỉ xuất một file raw/all. Việc chia leads/audit là trách
-    // nhiệm của bước merge/QA downstream để tránh phải gộp lại ngay sau đó.
-    downloadCsv(classified, scanFilename);
+    // Collector chỉ xuất các row đã capture; phân loại là bước downstream.
+    downloadCsv(capturedRows, scanFilename);
     const completedNaturally = !state.stopped;
     // Không tiến checkpoint nếu trang không trả về bản ghi nào (ví dụ bị
     // login wall, DOM chưa tải hoặc Facebook thay đổi giao diện), để lần sau
@@ -1201,10 +1257,10 @@
       ? "stopped"
       : records.size === 0
         ? "no_records_seen"
-        : classified.length === 0
+        : capturedRows.length === 0
           ? "zero_result_after_checkpoint"
           : "completed_with_rows";
-    hud.update("Đã hoàn tất phân loại.", classified);
+    hud.update("Đã hoàn tất thu thập.", capturedRows);
     const checkpointMessage = checkpointSaved
       ? " Đã lưu checkpoint."
       : state.stopped
@@ -1213,23 +1269,23 @@
           ? " Chưa cập nhật checkpoint vì chưa đọc được bản ghi."
           : " Không có dòng sau khi lọc theo checkpoint.";
     const completedAt = new Date();
-    const manifestStatus = manifestStatusForRun(runStatus, classified.length);
+    const manifestStatus = manifestStatusForRun(runStatus, capturedRows.length);
     const runManifest = buildRunManifest({
       groupUrl,
       groupName: groupContext.groupName,
       runId,
       startedAt: scanStartedAt,
       completedAt,
-      rowCount: classified.length,
+      rowCount: capturedRows.length,
       status: manifestStatus,
       outputFile: scanFilename,
     });
-    hud.finish(`Đã xuất file scan raw với ${classified.length} dòng (${leads.length} lead nội bộ, ${audit.length} audit nội bộ).${checkpointMessage}`);
+    hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
 
     const result = {
       leads,
       audit,
-      all: classified,
+      all: capturedRows,
       cutoff,
       scanStartedAt,
       completedAt,
@@ -1252,6 +1308,7 @@
         run_status: runStatus,
         run_id: runId,
         records_seen: records.size,
+        captured_count: capturedRows.length,
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
@@ -1268,6 +1325,7 @@
     CSV_HEADERS,
     analyzeText,
     buildCsv,
+    captureRecords,
     canonicalContentUrl,
     canonicalPostUrl,
     canonicalGroupUrl,

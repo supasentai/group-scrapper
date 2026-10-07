@@ -42,6 +42,8 @@ assert.ok(launch.args.some((arg) => arg.startsWith("--user-data-dir=")));
 
 assert.deepEqual(runner.buildCollectorOptions(config), {
   days: 3,
+  captureMode: "all",
+  deferClassification: true,
   maxRounds: 4,
   maxRuntimeMs: 90000,
   groupName: "Trusted Input Group",

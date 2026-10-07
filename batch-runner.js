@@ -14,17 +14,20 @@ const DEFAULT_CHILD_TIMEOUT_MS = DEFAULT_MAX_RUNTIME_MS + 120 * 1000;
 const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
 const DEFAULT_RUNNER_PATH = path.join(__dirname, "browser-runner.js");
 const DEFAULT_COLLECTOR_PATH = path.join(__dirname, "fb-group-lead-pilot.js");
+const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
 
 function usage() {
   return [
     "Usage:",
-    "  node batch-runner.js --groups-file <csv> --results-dir <dir> --days <n> [options]",
+    "  node batch-runner.js --results-dir <dir> --days <n> [options]",
     "Options:",
-    "  --groups-file <path>       Vietnamese group list CSV with TÊN HỘI NHÓM and LINK",
+    "  --checkpoints-file <path>  Primary JSON group/checkpoint source (default .\\checkpoints.json)",
+    "  --groups-file <path>       Legacy Vietnamese group list CSV with TÊN HỘI NHÓM and LINK",
     "  --resume-manifest <path>   Resume from a prior batch manifest",
     "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action",
     "  --results-dir <path>       Results directory (default .\\results)",
     "  --days <n>                 Collector lookback days (default 30)",
+    "  --capture-mode <mode>      Collector mode: all (default) or classified",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
     "  --max-runtime-ms <n>       Per-group collector runtime (default 900000)",
     "  --child-timeout-ms <n>     Per-group browser-runner process timeout",
@@ -121,11 +124,13 @@ function parseGroupsCsv(input) {
     const values = rows[index];
     const inputRow = index + 1;
     if (isBlankRow(values)) {
-      entries.push({ input_row: inputRow, group_name: "", group_url: "", status: "skipped_blank", error: null });
+      entries.push({ input_row: inputRow, source_type: "csv", input_key: null, group_name: "", group_url: "", status: "skipped_blank", error: null });
       continue;
     }
     entries.push({
       input_row: inputRow,
+      source_type: "csv",
+      input_key: null,
       group_name: String(values[nameIndex] || "").trim(),
       group_url: String(values[linkIndex] || "").trim(),
       status: "pending",
@@ -133,6 +138,78 @@ function parseGroupsCsv(input) {
     });
   }
   return { header_row: headerIndex + 1, entries };
+}
+
+function parseCheckpointsJson(input) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(input || "").replace(/^\uFEFF/, ""));
+  } catch (error) {
+    throw new Error(`checkpoints_file_invalid:${String(error.message || error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || !parsed.groups || typeof parsed.groups !== "object" || Array.isArray(parsed.groups)) {
+    throw new Error("checkpoints_file_groups_invalid");
+  }
+
+  const entries = [];
+  for (const [key, record] of Object.entries(parsed.groups)) {
+    let canonicalKey;
+    try {
+      canonicalKey = browserRunner.validateGroupUrl(key);
+    } catch (error) {
+      throw new Error(`checkpoints_file_group_key_invalid:${String(error.message || error)}`);
+    }
+    if (canonicalKey !== key) throw new Error(`checkpoints_file_group_key_not_canonical:${key}`);
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new Error(`checkpoints_file_group_record_invalid:${key}`);
+    }
+    let recordUrl;
+    try {
+      recordUrl = browserRunner.validateGroupUrl(record.group_url);
+    } catch (_error) {
+      throw new Error(`checkpoints_file_group_url_invalid:${key}`);
+    }
+    if (recordUrl !== canonicalKey) throw new Error(`checkpoints_file_group_url_mismatch:${key}`);
+    const groupName = String(record.group_name || "").replace(/\s+/g, " ").trim();
+    if (!groupName) throw new Error(`checkpoints_file_group_name_missing:${key}`);
+    const inputRow = Number(record.input_row || entries.length + 1);
+    if (!Number.isSafeInteger(inputRow) || inputRow <= 0) throw new Error(`checkpoints_file_input_row_invalid:${key}`);
+    const explicitStatus = String(record.status || "").trim();
+    const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action"]);
+    if (record.enabled !== false && explicitStatus && !supportedStatuses.has(explicitStatus)) {
+      throw new Error(`checkpoints_file_status_invalid:${key}:${explicitStatus}`);
+    }
+    entries.push({
+      input_row: inputRow,
+      input_key: canonicalKey,
+      source_type: "checkpoints",
+      group_name: groupName,
+      group_url: canonicalKey,
+      checkpoint: record.checkpoint || null,
+      enabled: record.enabled !== false,
+      status: record.enabled === false ? "skipped_disabled" : (explicitStatus || "pending"),
+      source_status: explicitStatus || null,
+      error: record.enabled === false ? "group_disabled" : null,
+    });
+  }
+  return { header_row: null, entries, source_type: "checkpoints_json" };
+}
+
+function applyExplicitCheckpointStatuses(groups, retryStatuses) {
+  const retrySet = new Set(retryStatuses || []);
+  for (const group of groups) {
+    if (group.source_type !== "checkpoints" || group.status === "pending" || group.status === "skipped_disabled") continue;
+    if (!retrySet.has(group.status)) {
+      throw new Error(`checkpoints_file_status_requires_retry:${group.group_url}:${group.status}`);
+    }
+    group.previous_status = group.status;
+    group.previous_run_id = null;
+    group.execution = "retried";
+    group.status = "pending";
+    group.error = null;
+  }
+  return groups;
 }
 
 function sha256(data) {
@@ -155,10 +232,12 @@ function parseJsonOutput(stdout) {
 function parseArgs(argv = process.argv.slice(2)) {
   const config = {
     groupsFile: "",
+    checkpointsFile: DEFAULT_CHECKPOINTS_FILE,
     resumeManifest: "",
     retryStatuses: [],
     resultsDir: DEFAULT_RESULTS_DIR,
     days: DEFAULT_DAYS,
+    captureMode: "all",
     maxRounds: 0,
     maxRuntimeMs: DEFAULT_MAX_RUNTIME_MS,
     childTimeoutMs: DEFAULT_CHILD_TIMEOUT_MS,
@@ -170,7 +249,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--groups-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--max-rounds", "--max-runtime-ms",
+    "--groups-file", "--checkpoints-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms",
     "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint",
     "--profile-dir", "--download-timeout-ms",
   ]);
@@ -185,10 +264,15 @@ function parseArgs(argv = process.argv.slice(2)) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
     index += 1;
     if (flag === "--groups-file") config.groupsFile = path.resolve(value);
+    else if (flag === "--checkpoints-file") config.checkpointsFile = path.resolve(value);
     else if (flag === "--resume-manifest") config.resumeManifest = path.resolve(value);
     else if (flag === "--retry-status") config.retryStatuses = [...new Set([...config.retryStatuses, ...parseRetryStatuses(value)])];
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
+    else if (flag === "--capture-mode") {
+      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      config.captureMode = String(value).toLowerCase();
+    }
     else if (flag === "--max-rounds") config.maxRounds = parsePositiveInteger(value, flag, { allowZero: true });
     else if (flag === "--max-runtime-ms") config.maxRuntimeMs = parsePositiveInteger(value, flag);
     else if (flag === "--child-timeout-ms") config.childTimeoutMs = parsePositiveInteger(value, flag);
@@ -198,7 +282,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
   }
-  if (!config.help && !config.groupsFile) throw new Error("--groups-file is required");
+  if (!config.help && !config.groupsFile && !config.checkpointsFile) throw new Error("--checkpoints-file or --groups-file is required");
   return config;
 }
 
@@ -244,11 +328,14 @@ function readResumeManifest(filePath) {
 }
 
 function resumeEntryKey(entry) {
+  if (entry?.source_type === "checkpoints" || entry?.input_key) {
+    return String(entry.input_key || canonicalResumeUrl(entry.group_url));
+  }
   return Number(entry?.input_row);
 }
 
 function isSkippedStatus(status) {
-  return /^(?:skipped_blank|skipped_invalid|skipped_duplicate)$/.test(String(status || ""));
+  return /^(?:skipped_blank|skipped_invalid|skipped_duplicate|skipped_disabled)$/.test(String(status || ""));
 }
 
 function canonicalResumeUrl(value) {
@@ -263,7 +350,10 @@ function validateResumeMapping(groups, resumeManifest) {
   const previous = new Map();
   for (const entry of resumeManifest.groups) {
     const key = resumeEntryKey(entry);
-    if (!Number.isSafeInteger(key) || key <= 0 || previous.has(key)) throw new Error("resume_manifest_input_row_mapping_invalid");
+    const validKey = typeof key === "number"
+      ? Number.isSafeInteger(key) && key > 0
+      : typeof key === "string" && Boolean(key);
+    if (!validKey || previous.has(key)) throw new Error("resume_manifest_input_row_mapping_invalid");
     previous.set(key, entry);
   }
   const current = new Map(groups.map((entry) => [resumeEntryKey(entry), entry]));
@@ -305,6 +395,14 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
     }
     group.previous_status = prior.status || null;
     group.previous_run_id = prior.run_id || null;
+    if (group.status === "skipped_disabled") {
+      group.execution = "reused";
+      group.run_id = prior.run_id || null;
+      group.row_count = prior.row_count ?? null;
+      group.needs_user_action = prior.needs_user_action || null;
+      group.error = group.error || prior.error || null;
+      continue;
+    }
     if (retrySet.has(prior.status)) {
       group.execution = "retried";
       group.status = "pending";
@@ -312,6 +410,14 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = null;
       group.row_count = null;
       group.needs_user_action = null;
+      continue;
+    }
+    if (group.status !== "pending") {
+      group.execution = "reused";
+      group.run_id = prior.run_id || null;
+      group.row_count = prior.row_count ?? null;
+      group.needs_user_action = prior.needs_user_action || null;
+      group.error = group.error || prior.error || null;
       continue;
     }
     group.execution = "reused";
@@ -325,6 +431,7 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
 }
 
 function makeRunnerArgs(group, config) {
+  const checkpointsFile = config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE;
   return [
     config.runnerPath,
     "--group-url", group.group_url,
@@ -332,9 +439,11 @@ function makeRunnerArgs(group, config) {
     "--collector-path", config.collectorPath,
     "--cdp-endpoint", config.cdpEndpoint,
     "--days", String(config.days),
+    "--capture-mode", config.captureMode || "all",
     "--max-rounds", String(config.maxRounds),
     "--max-runtime-ms", String(config.maxRuntimeMs),
     "--results-dir", config.resultsDir,
+    "--checkpoints-file", checkpointsFile,
     "--profile-dir", config.profileDir,
     "--download-timeout-ms", String(config.downloadTimeoutMs),
     "--child-timeout-ms", String(config.childTimeoutMs),
@@ -457,16 +566,19 @@ function batchManifestFilename(batchRunId) {
 }
 
 function runBatch(config, dependencies = {}) {
-  const inputPath = path.resolve(config.groupsFile);
+  const inputPath = path.resolve(config.groupsFile || config.checkpointsFile);
   const inputBuffer = fs.readFileSync(inputPath);
-  const parsed = parseGroupsCsv(inputBuffer.toString("utf8"));
+  const parsed = config.groupsFile
+    ? parseGroupsCsv(inputBuffer.toString("utf8"))
+    : parseCheckpointsJson(inputBuffer.toString("utf8"));
   const groups = prepareEntries(parsed);
-  const requestedGroupCount = groups.filter((group) => group.status === "pending").length;
   for (const group of groups) {
     group.execution = "new";
     group.previous_status = null;
     group.previous_run_id = null;
   }
+  if (!config.groupsFile) applyExplicitCheckpointStatuses(groups, config.retryStatuses);
+  const requestedGroupCount = groups.filter((group) => group.status === "pending").length;
   const resumeManifest = config.resumeManifest ? readResumeManifest(config.resumeManifest) : null;
   if (resumeManifest) applyResumeState(groups, resumeManifest, config.retryStatuses);
   const runner = dependencies.runGroup || ((group) => invokeBrowserRunner(group, config));
@@ -504,6 +616,8 @@ function runBatch(config, dependencies = {}) {
           ? "completed_with_stopped"
           : "completed",
     input_path: inputPath,
+    input_type: config.groupsFile ? "legacy_csv" : "checkpoints_json",
+    checkpoints_path: path.resolve(config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE),
     input_hash: sha256(inputBuffer),
     header_row: parsed.header_row,
     input_row_count: groups.length,
@@ -548,6 +662,7 @@ module.exports = {
   normalizeOutcome,
   parseRetryStatuses,
   parseArgs,
+  parseCheckpointsJson,
   parseCsvRows,
   parseGroupsCsv,
   prepareEntries,

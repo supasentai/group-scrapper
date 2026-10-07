@@ -11,6 +11,7 @@ const DEFAULT_BATCH_RUNNER = path.join(__dirname, "batch-runner.js");
 const DEFAULT_AGGREGATE_RUNNER = path.join(__dirname, "aggregate-results.js");
 const DEFAULT_MAX_RUNTIME_MS = 15 * 60 * 1000;
 const DEFAULT_CHILD_TIMEOUT_MS = DEFAULT_MAX_RUNTIME_MS + 120 * 1000;
+const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
 
 function parsePositiveInteger(value, flag) {
   if (!/^\d+$/.test(String(value || ""))) throw new Error(`${flag} must be a positive integer`);
@@ -22,6 +23,8 @@ function parsePositiveInteger(value, flag) {
 function parseArgs(argv = process.argv.slice(2)) {
   const config = {
     groupsFile: "",
+    checkpointsFile: DEFAULT_CHECKPOINTS_FILE,
+    captureMode: "all",
     resultsDir: DEFAULT_RESULTS_DIR,
     days: 30,
     maxRounds: 0,
@@ -41,7 +44,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--groups-file", "--results-dir", "--days", "--max-rounds", "--max-runtime-ms", "--child-timeout-ms",
+    "--groups-file", "--checkpoints-file", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms", "--child-timeout-ms",
     "--resume-manifest", "--retry-status", "--extra-run-id", "--batch-runner-path", "--aggregate-runner-path",
     "--collector-path", "--cdp-endpoint", "--profile-dir", "--download-timeout-ms", "--previous-report",
   ]);
@@ -60,8 +63,13 @@ function parseArgs(argv = process.argv.slice(2)) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
     index += 1;
     if (flag === "--groups-file") config.groupsFile = path.resolve(value);
+    else if (flag === "--checkpoints-file") config.checkpointsFile = path.resolve(value);
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
+    else if (flag === "--capture-mode") {
+      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      config.captureMode = String(value).toLowerCase();
+    }
     else if (flag === "--max-rounds") {
       if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`${flag} is out of range`);
       config.maxRounds = Number(value);
@@ -79,16 +87,19 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
     else if (flag === "--previous-report") config.previousReport = path.resolve(value);
   }
-  if (!config.help && !config.groupsFile) throw new Error("--groups-file is required");
+  if (!config.help && !config.groupsFile && !config.checkpointsFile) throw new Error("--checkpoints-file or --groups-file is required");
   return config;
 }
 
 function makeBatchCommand(config) {
   const args = [
     config.batchRunnerPath,
-    "--groups-file", config.groupsFile,
+    config.groupsFile ? "--groups-file" : "--checkpoints-file",
+    config.groupsFile || config.checkpointsFile,
+    "--checkpoints-file", config.checkpointsFile,
     "--results-dir", config.resultsDir,
     "--days", String(config.days),
+    "--capture-mode", config.captureMode || "all",
     "--max-rounds", String(config.maxRounds),
     "--max-runtime-ms", String(config.maxRuntimeMs),
     "--child-timeout-ms", String(config.childTimeoutMs),
@@ -250,8 +261,11 @@ function runCycle(config, dependencies = {}) {
 function usage() {
   return [
     "Usage:",
-    "  node cycle-runner.js --groups-file <csv> --results-dir <dir> [options]",
+    "  node cycle-runner.js --checkpoints-file <path> --results-dir <dir> [options]",
     "Options:",
+    "  --groups-file <path>       Legacy CSV group source",
+    "  --checkpoints-file <path> Primary JSON group/checkpoint source",
+    "  --capture-mode <mode>      Collector mode: all (default) or classified",
     "  --resume-manifest <path>   Resume prior batch",
     "  --retry-status <list>      Retry statuses passed to batch",
     "  --extra-run-id <run_id>    Include explicit aggregate rerun (repeatable)",

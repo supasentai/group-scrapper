@@ -62,7 +62,7 @@ Chỉ đọc output và classifier. Lấy mẫu độc lập, đánh nhãn đún
 
 ## Luồng một lượt chạy
 
-1. Orchestrator đọc `checkpoints.json`, xác định danh sách group và tạo task.
+1. Orchestrator đọc `checkpoints.json`, dùng các key URL canonical làm danh sách group, bỏ qua record `enabled=false` và tạo task.
 2. Gửi task cho Script Engineer và Browser Collector nếu cần chạy song song.
 3. Browser Collector trả về cặp file scan raw/manifest, số dòng, group đã xử lý và `run_status`.
 4. Orchestrator chạy `node .\ingest-downloads.js <downloads-dir> .\results` để đưa dữ liệu vào `results\<run_id>\raw`; ingestion không xóa file nguồn và có idempotency.
@@ -98,21 +98,23 @@ Manifest có `status=zero_result` khi lượt chạy không có dòng; `status=c
 
 ### Browser Runner Phase 1
 
-Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Người dùng phải mở Edge với `--remote-debugging-port` và `--user-data-dir` riêng, đăng nhập thủ công một lần, sau đó runner mới mở một group root và inject collector local. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
+Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Người dùng phải mở Edge với `--remote-debugging-port` và `--user-data-dir` riêng, đăng nhập thủ công một lần, sau đó runner mới mở một group root, đọc `checkpoints.json` và inject map vào `window.__FB_GROUP_CHECKPOINTS__` trước collector. Chỉ lượt tự nhiên có `checkpoint_saved=true` mới cập nhật checkpoint và `last_run` atomically; stopped/no-records giữ nguyên checkpoint. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint; page do runner tạo được giữ mở để người dùng xử lý. Sau completion, zero-result, stopped hoặc lỗi an toàn, runner chỉ đóng page/tab do chính nó tạo, không đóng browser Edge hay các tab khác. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
 
 ### Batch Runner Phase 2
 
-`batch-runner.js` nhận CSV có cột `TÊN HỘI NHÓM` và `LINK`, chạy các group hợp lệ theo thứ tự, tuần tự từng child process:
+`batch-runner.js` mặc định nhận `checkpoints.json`, chạy các group `enabled` theo thứ tự, tuần tự từng child process. CSV có cột `TÊN HỘI NHÓM` và `LINK` vẫn được hỗ trợ legacy bằng `--groups-file`:
 
 ```powershell
-node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results --days 3 --max-runtime-ms 900000
+node .\batch-runner.js --checkpoints-file .\checkpoints.json --results-dir .\results --days 3 --max-runtime-ms 900000
 ```
 
-Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Tên từ cột `TÊN HỘI NHÓM` là metadata tin cậy được truyền qua `--group-name`; collector không được thay bằng heading UI như `Giới thiệu` hoặc `Xem bản dịch`. Mọi dòng đầu vào đều có kết quả rõ ràng; dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
+Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, `input_type`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Với JSON, key URL phải canonical và khớp `group_url`; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled`. Với CSV legacy, dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý login/checkpoint/CAPTCHA thủ công và đánh dấu các group hợp lệ còn lại là `not_run`. Không tự nhập credential và không bypass CAPTCHA.
+
+Collector mặc định chạy `captureMode=all`: chỉ áp dụng date/checkpoint window, UI cleanup và technical dedupe; không dùng segment, intent, authenticity hoặc seeding để loại row. Classification chỉ chạy explicit ở bước aggregate/merge với `--classify`.
 
 ### Cross-group Aggregation Phase 3
 
-`aggregate-results.js` là bước downstream xác định phạm vi bằng batch manifest:
+`aggregate-results.js` là bước downstream xác định phạm vi bằng batch manifest và mặc định giữ raw/all:
 
 ```powershell
 node .\aggregate-results.js `
@@ -121,7 +123,7 @@ node .\aggregate-results.js `
   --extra-run-id scan_3d_1791368600975
 ```
 
-Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi dùng lại `merge-results.js` để normalize/dedupe/classify. `zero_result` không tạo row trong master nhưng vẫn được tính; completed runs hợp lệ được đưa vào `all/leads/audit`; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
+Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi dùng lại `merge-results.js` để normalize/dedupe. Mặc định completed runs hợp lệ được đưa đầy đủ vào `all`, kể cả row unresolved-time; dùng `--classify` mới tạo thêm `classified/leads/audit` từ date-qualified rows, không lọc thay đổi `all`. `zero_result` không tạo row trong master nhưng vẫn được tính; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
 
 ### Batch Reliability Phase 4
 
@@ -142,7 +144,7 @@ node .\batch-runner.js --groups-file .\groups.csv --results-dir .\results `
 Task Scheduler/cron chỉ nên gọi một cycle bounded; không tạo system automation từ repo:
 
 ```powershell
-node .\cycle-runner.js --groups-file .\groups.csv --results-dir .\results `
+node .\cycle-runner.js --checkpoints-file .\checkpoints.json --results-dir .\results `
   --max-runtime-ms 900000 --child-timeout-ms 1020000 `
   --previous-report .\results\aggregate_report_<previous>.json
 ```
