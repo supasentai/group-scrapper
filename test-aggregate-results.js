@@ -104,10 +104,11 @@ try {
   assert.equal(report.status, "completed_with_errors");
   assert.equal(report.input_row_count, 6);
   assert.equal(report.raw_rows, 4);
-  assert.equal(report.deduped_rows, 3);
-  assert.equal(report.in_window_rows, 3);
+  assert.equal(report.deduped_rows, 2);
+  assert.equal(report.in_window_rows, 2);
   assert.equal(report.date_qualified_rows, 2);
   assert.equal(report.unresolved_time_rows, 1);
+  assert.equal(report.quarantined_time_rows, 1);
   assert.equal(report.classification_mode, "raw");
   assert.equal(report.lead_rows, null);
   assert.equal(report.audit_rows, null);
@@ -125,9 +126,9 @@ try {
   assert.equal(report.pending_groups.length, 3);
   for (const output of Object.values(report.outputs)) assert.equal(fs.existsSync(output), true);
   const masterRows = require("./merge-results.js").parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
-  assert.equal(masterRows.length, 3);
+  assert.equal(masterRows.length, 2);
   assert.ok(masterRows.every((row) => ["Alpha Group", "Extra Group"].includes(row.group_name)));
-  assert.ok(masterRows.some((row) => row.published_at_text === "time unavailable"));
+  assert.equal(masterRows.some((row) => row.published_at_text === "time unavailable"), false);
   assert.ok(masterRows.every((row) => !row.text_excerpt.includes("Tài khoản đã xác minh")));
   const aggregateLead = masterRows.find((row) => row.group_name === "Alpha Group" && row.doctor_name);
   assert.equal(aggregateLead.doctor_name, "Dr erham");
@@ -146,7 +147,7 @@ try {
   assert.equal(fs.existsSync(classifiedReport.outputs.classified), true);
   assert.equal(fs.existsSync(classifiedReport.outputs.leads), true);
   assert.equal(fs.existsSync(classifiedReport.outputs.audit), true);
-  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.all, "utf8")).length, 3);
+  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.all, "utf8")).length, 2);
   assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.classified, "utf8")).length, 2);
 
   writeRun("run-rerun", "Stopped Group", "https://www.facebook.com/groups/stopped/", "completed", [{

@@ -364,17 +364,24 @@
     }
   }
 
-  function filterRecordsSince(rawRecords, cutoff) {
+  function publishedTimestamp(record, now = new Date()) {
+    if (record?.published_at) {
+      const parsed = new Date(record.published_at);
+      if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+    }
+    const parsed = parseFacebookTime(record?.published_at_text, now);
+    return parsed && !Number.isNaN(parsed.getTime()) ? parsed.getTime() : null;
+  }
+
+  function filterRecordsSince(rawRecords, cutoff, now = new Date()) {
     const threshold = new Date(cutoff).getTime();
     if (Number.isNaN(threshold)) return rawRecords;
     return rawRecords.filter((record) => {
-      const published = record.published_at
-        ? new Date(record.published_at).getTime()
-        : parseFacebookTime(record.published_at_text)?.getTime();
+      const published = publishedTimestamp(record, now);
       // Keep unresolved timestamps for downstream QA instead of silently
       // dropping otherwise valid captured records. The row carries a quality
       // flag and can be handled explicitly by aggregation/classification.
-      if (!published || Number.isNaN(published)) return true;
+      if (published === null || Number.isNaN(published)) return true;
       return published >= threshold;
     });
   }
@@ -1236,13 +1243,14 @@
       for (const record of collectRenderedRecords()) records.set(record.key, record);
 
       const allRecords = [...records.values()];
-      const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff), groupContext);
+      const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff, scanStartedAt), groupContext);
       // Dùng toàn bộ dữ liệu đã thấy để biết lúc nào đã cuộn qua mốc checkpoint.
       // Nếu chỉ nhìn dữ liệu sau cutoff thì điều kiện này không bao giờ đúng.
       const recordDates = allRecords
-        .map((record) => record.published_at
-          ? new Date(record.published_at)
-          : parseFacebookTime(record.published_at_text))
+        .map((record) => {
+          const timestamp = publishedTimestamp(record, scanStartedAt);
+          return timestamp === null ? null : new Date(timestamp);
+        })
         .filter((date) => date && !Number.isNaN(date.getTime()));
       const oldest = recordDates.length ? new Date(Math.min(...recordDates.map(Number))) : null;
       oldPostRounds = oldest && oldest < cutoff ? oldPostRounds + 1 : 0;
@@ -1266,7 +1274,7 @@
     }
 
     for (const record of collectRenderedRecords()) records.set(record.key, record);
-    const filteredRecords = filterRecordsSince([...records.values()], cutoff);
+    const filteredRecords = filterRecordsSince([...records.values()], cutoff, scanStartedAt);
     const capturedRows = captureRecords(filteredRecords, groupContext);
     const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
       && CONFIG.deferClassification === false;
@@ -1374,6 +1382,7 @@
     isLikelyAnonymousAlias,
     getGroupContext,
     filterRecordsSince,
+    publishedTimestamp,
     inferAuthorFromText,
     inferSourceType,
     isLikelyUiGroupHeading,
