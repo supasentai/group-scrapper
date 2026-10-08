@@ -776,6 +776,15 @@ function terminateProcessTree(pid) {
   try { process.kill(-pid, "SIGTERM"); } catch (_error) { /* already exited */ }
 }
 
+async function disconnectConnectedBrowser(browser) {
+  if (!browser || typeof browser.close !== "function") return;
+  // connectOverCDP() closes the Playwright transport without closing the
+  // user's Edge process. Without this cleanup the CDP websocket remains
+  // referenced by Node after the manifest is written, so a zero-result child
+  // can hang forever in batch mode.
+  await browser.close().catch(() => {});
+}
+
 async function runBrowser(config, dependencies = {}) {
   if (!fs.existsSync(config.collectorPath)) throw new Error(`Collector file not found: ${config.collectorPath}`);
   const collectorSource = fs.readFileSync(config.collectorPath, "utf8");
@@ -933,6 +942,7 @@ async function runBrowser(config, dependencies = {}) {
   } finally {
     if (page && downloadHandler) page.off("download", downloadHandler);
     if (!keepPageOpen && page?.close) await page.close().catch(() => {});
+    await (dependencies.disconnectBrowser || disconnectConnectedBrowser)(browser);
   }
 }
 
@@ -982,6 +992,7 @@ module.exports = {
   buildGroupNavigationUrl,
   DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
   deduplicateBackfilledPostRoots,
+  disconnectConnectedBrowser,
   findDownloadPair,
   isScanFilename,
   loadCheckpointMap,

@@ -228,6 +228,7 @@ function runAggregate(config, dependencies = {}) {
   const artifactIssues = [];
   const sourceRunIds = [];
   const rawRows = [];
+  const postRootFailures = [];
   const seenRunIds = new Set();
   const supersededRunIds = new Set();
 
@@ -281,6 +282,10 @@ function runAggregate(config, dependencies = {}) {
         }, artifactStatus));
       }
       if (pair.manifest.status === "completed") {
+        postRootFailures.push(...mergeResults.postRootFailuresFromManifest(pair.manifest).map((failure) => ({
+          ...failure,
+          group_url: failure.group_url || effectiveEntry?.group_url || pair.manifest.group_url || "",
+        })));
         rawRows.push(...rows.map((row) => ({
           ...row,
           group_name: effectiveEntry?.group_name || pair.manifest.group_name || row.group_name,
@@ -315,13 +320,14 @@ function runAggregate(config, dependencies = {}) {
 
   const normalized = mergeResults.normalizeRows(rawRows, now);
   const deduped = mergeResults.dedupe(normalized);
+  const policyRows = mergeResults.applyPostOnlyPolicy(deduped, { postRootFailures });
   const cutoff = new Date(now.getTime() - config.days * 86_400_000);
-  const dateQualified = deduped.filter((row) => row._date && row._date >= cutoff);
-  const unresolved = deduped.filter((row) => !row._date);
-  const old = deduped.filter((row) => row._date && row._date < cutoff);
+  const dateQualified = policyRows.filter((row) => row._date && row._date >= cutoff);
+  const unresolved = policyRows.filter((row) => !row._date);
+  const old = policyRows.filter((row) => row._date && row._date < cutoff);
   // Raw/all retains unresolved-time rows for QA; explicit classification is
   // limited to rows that can be proven to be inside the date window.
-  const all = deduped
+  const all = policyRows
     .filter((row) => !row._date || row._date >= cutoff)
     .map(({ _date, _index, ...row }) => row);
   const classified = config.classify

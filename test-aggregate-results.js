@@ -182,6 +182,62 @@ try {
   assert.equal(replacementReport.pending_groups.length, 0);
   assert.equal(replacementReport.released_groups[0].input_row, 4);
   assert.equal(replacementReport.released_groups[0].run_id, "run-rerun");
+
+  // The child CSV has no backfill flag; the artifact manifest carries it.
+  const manifestFailureGroup = "https://www.facebook.com/groups/manifest-failure/";
+  const manifestFailurePost = `${manifestFailureGroup}posts/77/`;
+  const manifestFailureRun = "run-manifest-failure";
+  writeRun(manifestFailureRun, "Manifest Failure Group", manifestFailureGroup, "completed", [
+    {
+      ...alphaRow,
+      group_name: "Manifest Failure Group",
+      group_url: manifestFailureGroup,
+      content_url: manifestFailurePost,
+      name: "Recovered-looking Root",
+      profile_url: "https://www.facebook.com/root-author/",
+      text_excerpt: "This post-shaped row must not survive a manifest-only backfill failure.",
+    },
+    {
+      ...alphaRow,
+      group_name: "Manifest Failure Group",
+      group_url: manifestFailureGroup,
+      content_url: `${manifestFailurePost}?comment_id=77-1`,
+      comment_url: `${manifestFailurePost}?comment_id=77-1`,
+      source_type: "comment",
+      name: "Comment Fallback",
+      profile_url: "https://www.facebook.com/comment-fallback/",
+      text_excerpt: "The comment remains available as fallback.",
+    },
+  ]);
+  const manifestFailureChild = path.join(resultsDir, manifestFailureRun, "raw", `fb_group_scan_3d_${manifestFailureRun}.manifest.json`);
+  const manifestFailurePayload = JSON.parse(fs.readFileSync(manifestFailureChild, "utf8"));
+  manifestFailurePayload.post_root_backfill = {
+    failures: [{ post_url: manifestFailurePost, status: "timeout" }],
+  };
+  fs.writeFileSync(manifestFailureChild, JSON.stringify(manifestFailurePayload), "utf8");
+  const manifestFailureBatch = path.join(tempDir, "batch_manifest_manifest_failure.json");
+  fs.writeFileSync(manifestFailureBatch, JSON.stringify({
+    input_row_count: 1,
+    requested_group_count: 1,
+    groups: [{
+      input_row: 1,
+      group_name: "Manifest Failure Group",
+      group_url: manifestFailureGroup,
+      run_id: manifestFailureRun,
+      status: "completed_with_rows",
+      row_count: 2,
+    }],
+  }), "utf8");
+  const manifestFailureReport = aggregate.runAggregate(aggregate.parseArgs([
+    "--batch-manifest", manifestFailureBatch,
+    "--results-dir", resultsDir,
+  ]), { now: new Date("2026-10-07T12:00:00.000Z") });
+  assert.equal(manifestFailureReport.status, "completed");
+  const manifestFailureRows = require("./merge-results.js").parseCsv(fs.readFileSync(manifestFailureReport.outputs.all, "utf8"));
+  assert.equal(manifestFailureRows.length, 1);
+  assert.equal(manifestFailureRows[0].source_type, "comment");
+  assert.match(manifestFailureRows[0].data_quality_flags, /post_root_backfill_failed/);
+  assert.match(manifestFailureRows[0].data_quality_flags, /comment_fallback/);
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }

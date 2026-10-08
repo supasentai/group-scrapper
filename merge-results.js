@@ -281,6 +281,146 @@ function dedupe(rows) {
   return [...result.values()].sort((a, b) => (a._date || 0) - (b._date || 0) || a._index - b._index);
 }
 
+function hasQualityFlag(row, flag) {
+  return String(row?.data_quality_flags || "")
+    .split(/[;|]/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(flag);
+}
+
+function isValidPostRoot(row) {
+  if (!row || row.source_type !== "post" || !row.post_url) return false;
+  if (hasQualityFlag(row, "post_root_backfill_failed")
+    || hasQualityFlag(row, "post_root_unavailable")
+    || hasQualityFlag(row, "post_root_not_found")
+    || hasQualityFlag(row, "post_root_backfill_timeout")) return false;
+  return row.content_url === row.post_url;
+}
+
+function addQualityFlags(row, ...newFlags) {
+  const flags = String(row.data_quality_flags || "")
+    .split(/[;|]/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const flag of newFlags) if (!flags.includes(flag)) flags.push(flag);
+  return { ...row, data_quality_flags: flags.join(";") };
+}
+
+function normalizePostRootFailureEntries(entries, inheritedGroupUrl = "") {
+  const failures = [];
+  const visit = (value, context = "", groupUrl = inheritedGroupUrl) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, context, groupUrl);
+      return;
+    }
+    if (typeof value === "string") {
+      if (/(?:fail|timeout|not.?found|unavailable|error)/i.test(context)) {
+        const url = pilot.canonicalPostUrl(value);
+        if (url) failures.push({ group_url: groupUrl, post_url: url });
+      }
+      return;
+    }
+    if (typeof value !== "object") return;
+    const objectGroupUrl = value.group_url || value.groupUrl || groupUrl;
+    const postUrl = value.post_url || value.postUrl || value.content_url || value.contentUrl || value.url;
+    const status = [context, value.status, value.error, value.reason, value.quality_flag]
+      .filter(Boolean).join(" ");
+    if (postUrl && /(?:fail|timeout|not.?found|unavailable|error)/i.test(status)) {
+      const canonical = pilot.canonicalPostUrl(postUrl);
+      if (canonical) failures.push({ group_url: objectGroupUrl, post_url: canonical });
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (["group_url", "groupUrl", "post_url", "postUrl", "content_url", "contentUrl", "url"].includes(key)) continue;
+      if (typeof child === "object" || typeof child === "string") visit(child, `${context} ${key}`, objectGroupUrl);
+    }
+  };
+  visit(entries);
+  return failures;
+}
+
+function postRootFailuresFromManifest(manifest) {
+  const failures = [];
+  const candidateKeys = [
+    "post_root_backfill_failures",
+    "postRootBackfillFailures",
+    "post_root_failures",
+    "postRootFailures",
+    "backfill_failures",
+    "backfillFailures",
+    "post_root_backfill",
+    "postRootBackfill",
+    "backfill",
+  ];
+  for (const key of candidateKeys) {
+    if (manifest && manifest[key] !== undefined) failures.push(...normalizePostRootFailureEntries(manifest[key], manifest.group_url || ""));
+  }
+  return failures;
+}
+
+function markPostRootFailures(rows, failures = []) {
+  const directEntries = (Array.isArray(failures) ? failures : [failures])
+    .filter((entry) => entry && typeof entry === "object"
+      && (entry.post_url || entry.postUrl || entry.content_url || entry.contentUrl || entry.url))
+    .map((entry) => ({
+      group_url: entry.group_url || entry.groupUrl || "",
+      post_url: pilot.canonicalPostUrl(entry.post_url || entry.postUrl || entry.content_url || entry.contentUrl || entry.url),
+    }))
+    .filter((entry) => entry.post_url);
+  const entries = directEntries.length
+    ? directEntries
+    : normalizePostRootFailureEntries(failures);
+  if (!entries.length) return rows.map((row) => ({ ...row }));
+  return rows.map((row) => {
+    const postUrl = pilot.canonicalPostUrl(row.post_url || row.content_url);
+    const matched = entries.some((entry) => postUrl === entry.post_url
+      && (!entry.group_url || entry.group_url === row.group_url));
+    return matched ? addQualityFlags(row, "post_root_backfill_failed") : { ...row };
+  });
+}
+
+/**
+ * Collapse raw post/comment rows into the handoff policy:
+ * - one canonical post row per group + post URL when a valid root exists;
+ * - otherwise preserve comment/reply rows as explicit fallbacks.
+ *
+ * This never mutates the raw input objects and deliberately never relabels
+ * comment text as a post.
+ */
+function applyPostOnlyPolicy(rows, options = {}) {
+  const rowsWithManifestFailures = markPostRootFailures(rows, options.postRootFailures || []);
+  const groups = new Map();
+  for (const row of rowsWithManifestFailures) {
+    const key = `${row.group_url}|${row.post_url}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+
+  const output = [];
+  for (const groupRows of groups.values()) {
+    const validRoots = groupRows.filter(isValidPostRoot);
+    if (validRoots.length) {
+      const root = [...validRoots].sort((a, b) =>
+        (b.text_excerpt || "").length - (a.text_excerpt || "").length
+        || a._index - b._index)[0];
+      output.push({
+        ...root,
+        source_type: "post",
+        content_url: root.post_url,
+        comment_url: "",
+      });
+      continue;
+    }
+
+    for (const row of groupRows) {
+      if (!(["comment", "reply"].includes(row.source_type) && row.comment_url && row.content_url)) continue;
+      output.push(addQualityFlags(row, "post_root_unavailable", "comment_fallback"));
+    }
+  }
+  return output.sort((a, b) => (a._date || 0) - (b._date || 0) || a._index - b._index);
+}
+
 function qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, rowCount) {
   const qualityFlags = [];
   if (rowCount && !sourceTypeCounts.post) qualityFlags.push("no_post_rows_detected");
@@ -316,12 +456,13 @@ function main() {
 
   const raw = sourceFiles.flatMap((name) => parseCsv(fs.readFileSync(path.join(dir, name), "utf8")));
   const normalized = dedupe(normalizeRows(raw, now));
-  const dateQualified = normalized.filter((row) => row._date && row._date >= cutoff);
-  const unresolved = normalized.filter((row) => !row._date);
-  const old = normalized.filter((row) => row._date && row._date < cutoff);
+  const policyRows = applyPostOnlyPolicy(normalized);
+  const dateQualified = policyRows.filter((row) => row._date && row._date >= cutoff);
+  const unresolved = policyRows.filter((row) => !row._date);
+  const old = policyRows.filter((row) => row._date && row._date < cutoff);
   // Raw/all retains unresolved-time rows for QA. Only explicitly classified
   // outputs use the date-qualified subset.
-  const all = normalized
+  const all = policyRows
     .filter((row) => !row._date || row._date >= cutoff)
     .map(({ _date, _index, ...row }) => row);
   const classified = classify ? classificationOutputs(dateQualified.map(({ _date, _index, ...row }) => row)) : null;
@@ -377,4 +518,20 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { HEADERS, classificationOutputs, parseCsv, normalizeRows, dedupe, chooseSourceFiles, qualityFlagsForReport, writeCsv };
+module.exports = {
+  HEADERS,
+  addQualityFlags,
+  applyPostOnlyPolicy,
+  classificationOutputs,
+  dedupe,
+  hasQualityFlag,
+  isValidPostRoot,
+  markPostRootFailures,
+  normalizeRows,
+  parseCsv,
+  normalizePostRootFailureEntries,
+  postRootFailuresFromManifest,
+  chooseSourceFiles,
+  qualityFlagsForReport,
+  writeCsv,
+};

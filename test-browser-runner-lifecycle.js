@@ -155,7 +155,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(completed.result.status, "zero_result");
   assert.equal(completed.page.closeCount, 1);
   assert.deepEqual(completed.page.gotoUrls, ["https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL"]);
-  assert.equal(completed.browser.closeCount, 0);
+  assert.equal(completed.browser.closeCount, 1);
   assert.equal(completed.page.offCount, 1);
   assert.equal(completed.page.injectedCheckpoints["https://www.facebook.com/groups/example/"], "2026-10-06T00:00:00.000Z");
   assert.equal(completed.result.files.checkpoint_update.updated, true);
@@ -169,7 +169,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   const stopped = await runCase({ manifestStatus: "stopped" });
   assert.equal(stopped.result.status, "stopped");
   assert.equal(stopped.page.closeCount, 1);
-  assert.equal(stopped.browser.closeCount, 0);
+  assert.equal(stopped.browser.closeCount, 1);
   assert.equal(stopped.commands.length, 0);
   assert.equal(stopped.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
 
@@ -199,6 +199,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(stoppedWithRows.result.files.post_root_backfill.succeeded, 1);
   assert.equal(stoppedWithRows.result.row_count, 2);
   assert.equal(stoppedWithRows.commands.length, 0);
+  assert.equal(stoppedWithRows.browser.closeCount, 1);
   assert.equal(stoppedWithRows.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
 
   const noRecords = await runCase({
@@ -253,12 +254,12 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   const failed = await runCase({ ingestionExitCode: 1 });
   assert.match(failed.error.message, /Ingestion failed/);
   assert.equal(failed.page.closeCount, 1);
-  assert.equal(failed.browser.closeCount, 0);
+  assert.equal(failed.browser.closeCount, 1);
 
   const needsAction = await runCase({ action: "Facebook login required" });
   assert.equal(needsAction.result.status, "needs_user_action");
   assert.equal(needsAction.page.closeCount, 0);
-  assert.equal(needsAction.browser.closeCount, 0);
+  assert.equal(needsAction.browser.closeCount, 1);
 
   const visitedPostUrls = [];
   let backfillPageClosed = 0;
