@@ -17,6 +17,7 @@ const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
 const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
 const TEMPORARY_DOWNLOAD_PATTERN = /\.(?:crdownload|part|tmp)$/i;
 const SCAN_FILENAME_PATTERN = /^fb_group_scan_(\d+)d_(.+)\.csv$/i;
+const GROUP_SORTING_SETTING = "CHRONOLOGICAL";
 const PUBLISHED_TIME_UNITS = "m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm";
 const PUBLISHED_TIME_PATTERN = new RegExp(
   `^(?:just now|now|vừa xong|hôm nay(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|hôm qua(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|today(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?|yesterday(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}(?:[T\\s].*)?|\\d+\\s*(?:${PUBLISHED_TIME_UNITS})(?:\\s+(?:ago|trước))?|\\d{1,2}\\s+tháng\\s+\\d{1,2}(?:\\s+năm\\s+\\d{4})?(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|\\d{1,2}\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\\s+\\d{2,4})?(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?)$`,
@@ -93,6 +94,16 @@ function validateGroupUrl(rawUrl) {
   const match = url.pathname.match(/^\/groups\/([^/]+)\/?$/i);
   if (!match) throw new Error(`Group URL must point to a group root: ${rawUrl}`);
   return `${url.protocol}//${url.hostname}/groups/${match[1]}/`;
+}
+
+function buildGroupNavigationUrl(rawUrl) {
+  // Sorting is a navigation concern only. Always derive it from the
+  // canonical group identity so query parameters never enter checkpoints,
+  // manifests, or collector output.
+  const canonicalGroupUrl = validateGroupUrl(rawUrl);
+  const navigationUrl = new URL(canonicalGroupUrl);
+  navigationUrl.searchParams.set("sorting_setting", GROUP_SORTING_SETTING);
+  return navigationUrl.toString();
 }
 
 function validateGroupName(rawName) {
@@ -786,7 +797,7 @@ async function runBrowser(config, dependencies = {}) {
     if (!contexts.length) throw new Error("No browser context available over CDP");
     const context = contexts[0];
     page = await context.newPage();
-    await page.goto(config.groupUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.goto(buildGroupNavigationUrl(config.groupUrl), { waitUntil: "domcontentloaded", timeout: 30_000 });
     const userAction = await (dependencies.detectUserAction || detectUserAction)(page);
     if (userAction) {
       keepPageOpen = true;
@@ -968,6 +979,7 @@ module.exports = {
   buildCollectorOptions,
   backfillPostRoots,
   buildEdgeLaunchCommand,
+  buildGroupNavigationUrl,
   DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
   deduplicateBackfilledPostRoots,
   findDownloadPair,

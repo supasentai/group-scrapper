@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const runner = require("./browser-runner.js");
 
@@ -8,12 +10,16 @@ assert.equal(
   runner.validateGroupUrl("https://www.facebook.com/groups/example/?ref=bookmarks"),
   "https://www.facebook.com/groups/example/",
 );
+assert.equal(
+  runner.buildGroupNavigationUrl("https://www.facebook.com/groups/example/?ref=bookmarks&sorting_setting=CHRONOLOGICAL"),
+  "https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL",
+);
 assert.throws(() => runner.validateGroupUrl("https://www.facebook.com/groups/example/posts/123/"), /group root/);
 assert.throws(() => runner.validateGroupUrl("https://example.com/groups/example/"), /facebook\.com/);
 assert.equal(runner.validateCdpEndpoint("http://127.0.0.1:9222/"), "http://127.0.0.1:9222");
 
 const config = runner.parseArgs([
-  "--group-url", "https://www.facebook.com/groups/example/",
+  "--group-url", "https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL",
   "--group-name", "Trusted Input Group",
   "--collector-path", "fb-group-lead-pilot.js",
   "--cdp-endpoint", "http://127.0.0.1:9333",
@@ -23,6 +29,26 @@ const config = runner.parseArgs([
   "--results-dir", "results/runner-test",
 ]);
 assert.equal(config.groupUrl, "https://www.facebook.com/groups/example/");
+assert.equal(runner.buildGroupNavigationUrl(config.groupUrl), "https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL");
+const checkpointDir = fs.mkdtempSync(path.join(os.tmpdir(), "group-navigation-checkpoint-"));
+const checkpointFile = path.join(checkpointDir, "checkpoints.json");
+fs.writeFileSync(checkpointFile, JSON.stringify({
+  version: 1,
+  groups: {
+    "https://www.facebook.com/groups/example/": {
+      group_url: "https://www.facebook.com/groups/example/",
+      group_name: "Trusted Input Group",
+      checkpoint: "2026-10-08T00:00:00.000Z",
+    },
+  },
+}), "utf8");
+const checkpointMap = runner.loadCheckpointMap(
+  checkpointFile,
+  "https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL",
+);
+assert.deepEqual(Object.keys(checkpointMap), ["https://www.facebook.com/groups/example/"]);
+assert.equal(checkpointMap["https://www.facebook.com/groups/example/"], "2026-10-08T00:00:00.000Z");
+fs.rmSync(checkpointDir, { recursive: true, force: true });
 assert.equal(config.groupName, "Trusted Input Group");
 assert.equal(config.days, 3);
 assert.equal(config.maxRounds, 4);

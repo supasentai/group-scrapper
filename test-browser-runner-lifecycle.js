@@ -10,10 +10,11 @@ const runner = require("./browser-runner.js");
 function makePage(lastRun = null) {
   let closeCount = 0;
   let offCount = 0;
+  const gotoUrls = [];
   let injectedCheckpoints = null;
   return {
     url: () => "https://www.facebook.com/groups/example/",
-    goto: async () => {},
+    goto: async (url) => { gotoUrls.push(url); },
     on: () => {},
     off: () => { offCount += 1; },
     evaluate: async (...args) => {
@@ -24,6 +25,7 @@ function makePage(lastRun = null) {
     close: async () => { closeCount += 1; },
     get closeCount() { return closeCount; },
     get offCount() { return offCount; },
+    get gotoUrls() { return gotoUrls; },
     get injectedCheckpoints() { return injectedCheckpoints; },
   };
 }
@@ -152,6 +154,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   });
   assert.equal(completed.result.status, "zero_result");
   assert.equal(completed.page.closeCount, 1);
+  assert.deepEqual(completed.page.gotoUrls, ["https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL"]);
   assert.equal(completed.browser.closeCount, 0);
   assert.equal(completed.page.offCount, 1);
   assert.equal(completed.page.injectedCheckpoints["https://www.facebook.com/groups/example/"], "2026-10-06T00:00:00.000Z");
