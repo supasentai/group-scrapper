@@ -206,6 +206,7 @@ function markdownReport(report) {
     `- Deduped rows: ${report.deduped_rows}`,
     `- In-window rows: ${report.in_window_rows}`,
     `- Date-qualified rows: ${report.date_qualified_rows}`,
+    `- Source types: ${Object.entries(report.source_type_counts).map(([type, count]) => `${type}=${count}`).join(", ") || "none"}`,
     `- Anonymous rows: ${report.anonymous_rows}`,
     `- Missing profile rows: ${report.missing_profile_rows}`,
     "",
@@ -337,6 +338,9 @@ function runAggregate(config, dependencies = {}) {
   const stamp = now.toISOString().replace(/[-:.]/g, "");
   const outputs = {
     all: path.join(resultsDir, `fb_group_aggregate_all_${stamp}_utf8.csv`),
+    posts: path.join(resultsDir, `fb_group_aggregate_posts_${stamp}_utf8.csv`),
+    comments: path.join(resultsDir, `fb_group_aggregate_comments_context_${stamp}_utf8.csv`),
+    unresolved: path.join(resultsDir, `fb_group_aggregate_unresolved_context_${stamp}_utf8.csv`),
     report_json: path.join(resultsDir, `aggregate_report_${stamp}.json`),
     report_md: path.join(resultsDir, `aggregate_report_${stamp}.md`),
   };
@@ -388,6 +392,9 @@ function runAggregate(config, dependencies = {}) {
     outputs,
   };
   mergeResults.writeCsv(outputs.all, all);
+  mergeResults.writeCsv(outputs.posts, all.filter((row) => row.source_type === "post"));
+  mergeResults.writeCsv(outputs.comments, all.filter((row) => ["comment", "reply"].includes(row.source_type)));
+  mergeResults.writeCsv(outputs.unresolved, all.filter((row) => row.source_type === "unresolved"));
   fs.writeFileSync(outputs.report_json, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(outputs.report_md, `${markdownReport(report)}\n`, "utf8");
   return report;

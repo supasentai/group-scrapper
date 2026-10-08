@@ -45,6 +45,7 @@ try {
     "--max-runtime-ms", "1000",
     "--child-timeout-ms", "2000",
   ]);
+  assert.ok(batch.runnerTimeoutMs(config) > config.maxRuntimeMs);
   const runnerArgs = batch.makeRunnerArgs({
     group_url: "https://www.facebook.com/groups/alpha/",
     group_name: "Alpha Group",

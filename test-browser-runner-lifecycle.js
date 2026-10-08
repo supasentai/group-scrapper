@@ -28,10 +28,16 @@ function makePage(lastRun = null) {
   };
 }
 
-function makeBrowser(page) {
+function makeBrowser(page, backfillPage = page) {
   let closeCount = 0;
+  let newPageCount = 0;
   return {
-    contexts: () => [{ newPage: async () => page }],
+    contexts: () => [{
+      newPage: async () => {
+        newPageCount += 1;
+        return newPageCount === 1 ? page : backfillPage;
+      },
+    }],
     close: async () => { closeCount += 1; },
     get closeCount() { return closeCount; },
   };
@@ -53,18 +59,18 @@ function makeConfig(resultsDir, checkpointsFile) {
   };
 }
 
-function writePair(stagingDir, status) {
+function writePair(stagingDir, status, rows = []) {
   const csv = "fb_group_scan_3d_lifecycle.csv";
   const manifest = "fb_group_scan_3d_lifecycle.manifest.json";
-  fs.writeFileSync(path.join(stagingDir, csv), pilot.buildCsv([]), "utf8");
+  fs.writeFileSync(path.join(stagingDir, csv), pilot.buildCsv(rows), "utf8");
   fs.writeFileSync(path.join(stagingDir, manifest), JSON.stringify({
     run_id: "lifecycle",
     status,
-    row_count: 0,
+    row_count: rows.length,
   }), "utf8");
 }
 
-async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null } = {}) {
+async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null, scanRows = [], backfillCandidate = null } = {}) {
   const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-runner-lifecycle-"));
   const checkpointsFile = path.join(resultsDir, "checkpoints.json");
   fs.writeFileSync(checkpointsFile, JSON.stringify({
@@ -78,14 +84,19 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
     },
   }), "utf8");
   const page = makePage(lastRun);
-  const browser = makeBrowser(page);
+  const backfillPage = backfillCandidate ? {
+    goto: async () => {},
+    evaluate: async () => [backfillCandidate],
+    close: async () => {},
+  } : page;
+  const browser = makeBrowser(page, backfillPage);
   const commands = [];
   try {
     const result = await runner.runBrowser(makeConfig(resultsDir, checkpointsFile), {
       playwright: { chromium: { connectOverCDP: async () => browser } },
       detectUserAction: async () => action,
       waitForPair: async ({ stagingDir }) => {
-        writePair(stagingDir, manifestStatus);
+        writePair(stagingDir, manifestStatus, scanRows);
         return true;
       },
       runCommand: (command) => {
@@ -111,6 +122,20 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
 }
 
 (async () => {
+  let extractorArgument = null;
+  let extractorSource = "";
+  await runner.readPostRootCandidates({
+    evaluate: async (fn, argument) => {
+      extractorSource = fn.toString();
+      extractorArgument = argument;
+      return [];
+    },
+  }, "https://www.facebook.com/groups/example/posts/456/");
+  assert.equal(extractorArgument, "https://www.facebook.com/groups/example/posts/456/");
+  assert.match(extractorSource, /data-ad-rendering-role/);
+  assert.match(extractorSource, /data-virtualized/);
+  assert.match(extractorSource, /\\p\{Cf\}/);
+
   const completed = await runCase({
     lastRun: {
       group_name: "Example Group",
@@ -132,6 +157,11 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(completed.page.injectedCheckpoints["https://www.facebook.com/groups/example/"], "2026-10-06T00:00:00.000Z");
   assert.equal(completed.result.files.checkpoint_update.updated, true);
   assert.equal(completed.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-07T00:00:00.000Z");
+  const completedLastRun = completed.checkpointDocument.groups["https://www.facebook.com/groups/example/"].last_run;
+  assert.equal(completedLastRun.run_id, "lifecycle");
+  assert.equal(completedLastRun.status, "completed_with_rows");
+  assert.equal(completedLastRun.started_at, "2026-10-07T00:00:00.000Z");
+  assert.match(completedLastRun.completed_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   const stopped = await runCase({ manifestStatus: "stopped" });
   assert.equal(stopped.result.status, "stopped");
@@ -139,6 +169,34 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(stopped.browser.closeCount, 0);
   assert.equal(stopped.commands.length, 0);
   assert.equal(stopped.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
+
+  const stoppedWithRows = await runCase({
+    manifestStatus: "stopped",
+    scanRows: [{
+      group_name: "Example Group",
+      group_url: "https://www.facebook.com/groups/example/",
+      content_url: "https://www.facebook.com/groups/example/posts/456/?comment_id=789",
+      post_url: "https://www.facebook.com/groups/example/posts/456/",
+      comment_url: "https://www.facebook.com/groups/example/posts/456/?comment_id=789",
+      name: "Comment Author",
+      source_type: "comment",
+      published_at_text: "7 giờ",
+      text_excerpt: "Comment context",
+    }],
+    backfillCandidate: {
+      post_url: "https://www.facebook.com/groups/example/posts/456/",
+      name: "Root Author",
+      published_at_text: "7 giờ",
+      text_excerpt: "Root question",
+    },
+  });
+  assert.equal(stoppedWithRows.result.status, "stopped");
+  assert.equal(stoppedWithRows.result.files.backfill_only, true);
+  assert.equal(stoppedWithRows.result.files.collector_status, "stopped");
+  assert.equal(stoppedWithRows.result.files.post_root_backfill.succeeded, 1);
+  assert.equal(stoppedWithRows.result.row_count, 2);
+  assert.equal(stoppedWithRows.commands.length, 0);
+  assert.equal(stoppedWithRows.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
 
   const noRecords = await runCase({
     lastRun: {
@@ -198,6 +256,122 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(needsAction.result.status, "needs_user_action");
   assert.equal(needsAction.page.closeCount, 0);
   assert.equal(needsAction.browser.closeCount, 0);
+
+  const visitedPostUrls = [];
+  let backfillPageClosed = 0;
+  const backfillPage = {
+    goto: async (url) => { visitedPostUrls.push(url); },
+    evaluate: async () => [{
+      post_url: "https://www.facebook.com/groups/example/posts/456/?ref=share",
+      name: "Root Author",
+      published_at_text: "Hôm qua lúc 03:17",
+      text_excerpt: "Has anyone had this procedure?",
+    }],
+    close: async () => { backfillPageClosed += 1; },
+  };
+  const backfill = await runner.backfillPostRoots({
+    context: { newPage: async () => backfillPage },
+    rows: [
+      { content_url: "https://www.facebook.com/groups/example/posts/456/?comment_id=789", source_type: "comment" },
+      { content_url: "https://www.facebook.com/groups/example/posts/456/?comment_id=790", source_type: "comment" },
+    ],
+    groupName: "Example Group",
+    groupUrl: "https://www.facebook.com/groups/example/",
+  });
+  assert.equal(backfill.rows.length, 3);
+  assert.equal(backfill.rows.at(-1).source_type, "post");
+  assert.equal(backfill.rows.at(-1).content_url, "https://www.facebook.com/groups/example/posts/456/");
+  assert.equal(backfill.stats.attempted, 1);
+  assert.equal(backfill.stats.succeeded, 1);
+  assert.deepEqual(visitedPostUrls, ["https://www.facebook.com/groups/example/posts/456/"]);
+  assert.equal(backfillPageClosed, 1);
+
+  let delayedEvaluateCalls = 0;
+  let delayedPageClosed = 0;
+  const delayedBackfill = await runner.backfillPostRoots({
+    context: {
+      newPage: async () => ({
+        goto: async () => {},
+        evaluate: async () => {
+          delayedEvaluateCalls += 1;
+          return delayedEvaluateCalls === 1 ? [] : [{
+            post_url: "https://www.facebook.com/groups/example/posts/457/",
+            name: "Delayed Author",
+            published_at_text: "13 giờ",
+            text_excerpt: "Delayed root question",
+          }];
+        },
+        close: async () => { delayedPageClosed += 1; },
+      }),
+    },
+    rows: [{
+      content_url: "https://www.facebook.com/groups/example/posts/457/?comment_id=789",
+      source_type: "comment",
+    }],
+    timeoutMs: 5_000,
+  });
+  assert.equal(delayedBackfill.stats.succeeded, 1);
+  assert.equal(delayedBackfill.rows.at(-1).source_type, "post");
+  assert.ok(delayedEvaluateCalls >= 2);
+  assert.equal(delayedPageClosed, 1);
+
+  let retryAttempts = 0;
+  let retryPagesClosed = 0;
+  const retriedBackfill = await runner.backfillPostRoots({
+    context: {
+      newPage: async () => {
+        retryAttempts += 1;
+        if (retryAttempts === 1) {
+          return {
+            goto: async () => { throw new Error("transient navigation failure"); },
+            evaluate: async () => [],
+            close: async () => { retryPagesClosed += 1; },
+          };
+        }
+        return {
+          goto: async () => {},
+          evaluate: async () => [{
+            post_url: "https://www.facebook.com/groups/example/posts/458/",
+            name: "Retried Author",
+            published_at_text: "19 phút",
+            text_excerpt: "Recovered after retry",
+          }],
+          close: async () => { retryPagesClosed += 1; },
+        };
+      },
+    },
+    rows: [{
+      content_url: "https://www.facebook.com/groups/example/posts/458/?comment_id=789",
+      source_type: "comment",
+    }],
+    timeoutMs: 5_000,
+  });
+  assert.equal(retryAttempts, 2);
+  assert.equal(retryPagesClosed, 2);
+  assert.equal(retriedBackfill.stats.attempted, 1);
+  assert.equal(retriedBackfill.stats.succeeded, 1);
+  assert.equal(retriedBackfill.stats.failed, 0);
+  assert.equal(retriedBackfill.rows.at(-1).source_type, "post");
+  assert.equal(retriedBackfill.rows.at(-1).content_url, "https://www.facebook.com/groups/example/posts/458/");
+
+  const failedBackfill = await runner.backfillPostRoots({
+    context: {
+      newPage: async () => ({
+        goto: async () => {},
+        evaluate: async () => [],
+        close: async () => {},
+      }),
+    },
+    rows: [{
+      content_url: "https://www.facebook.com/groups/example/posts/999/?comment_id=789",
+      source_type: "comment",
+    }],
+    timeoutMs: 1000,
+  });
+  assert.equal(failedBackfill.rows.length, 1);
+  assert.equal(failedBackfill.stats.succeeded, 0);
+  assert.equal(failedBackfill.stats.failed, 1);
+  assert.deepEqual(failedBackfill.stats.quality_flags, ["post_root_backfill_failed"]);
 
   console.log("Browser runner lifecycle tests passed.");
 })().catch((error) => {

@@ -28,6 +28,7 @@ assert.equal(config.days, 3);
 assert.equal(config.maxRounds, 4);
 assert.equal(config.maxRuntimeMs, 90000);
 assert.equal(config.cdpEndpoint, "http://127.0.0.1:9333");
+assert.equal(config.postRootBackfillTimeoutMs, 120000);
 assert.equal(config.childTimeoutMs, 120000);
 assert.equal(config.collectorPath, path.resolve("fb-group-lead-pilot.js"));
 assert.throws(() => runner.parseArgs(["--days", "3"]), /--group-url is required/);
@@ -65,6 +66,53 @@ assert.equal(runner.findDownloadPair([csv]), null);
 assert.equal(runner.manifestFilenameFor(csv), manifest);
 assert.equal(runner.safeDownloadName(csv), csv);
 assert.throws(() => runner.safeDownloadName("..\\escape.csv"), /Unsafe/);
+
+const commentUrl = "https://www.facebook.com/groups/example/posts/456/?comment_id=789";
+const canonicalPostUrl = "https://www.facebook.com/groups/example/posts/456/";
+assert.equal(runner.postRootUrlFromRow({ content_url: commentUrl }), canonicalPostUrl);
+assert.equal(runner.normalizePublishedTimeText("7\u034f giờ"), "7 giờ");
+assert.equal(runner.extractPublishedTimeText("ResilientLlama7062 · 7 giờ"), "7 giờ");
+assert.equal(runner.isPublishedTimeText("7 giờ"), true);
+assert.equal(runner.isPublishedTimeText("2.5 months"), false);
+assert.equal(runner.extractPublishedTimeText("I had this result for 2.5 months"), "");
+const normalizedTimestampCandidate = runner.normalizeBackfilledPostRoot({
+  post_url: canonicalPostUrl,
+  name: "Patricia Duran Nobrega",
+  published_at_text: "13 giờ",
+  text_excerpt: "I have had fat grafting under eyes 2.5 months before. Is this the final result?",
+}, canonicalPostUrl);
+assert.equal(normalizedTimestampCandidate.source_type, "post");
+assert.match(normalizedTimestampCandidate.text_excerpt, /2\.5 months/);
+assert.deepEqual(runner.deduplicateBackfilledPostRoots([
+  { content_url: `${canonicalPostUrl}?ref=share`, source_type: "post", text_excerpt: "Root question" },
+  { content_url: canonicalPostUrl, source_type: "post", text_excerpt: "Duplicate root" },
+]), [{
+  content_url: canonicalPostUrl,
+  source_type: "post",
+  text_excerpt: "Root question",
+}]);
+assert.deepEqual(runner.normalizeBackfilledPostRoot({
+  post_url: `${canonicalPostUrl}?ref=share`,
+  name: "Root Author",
+  published_at_text: "Hôm qua lúc 03:17",
+  text_excerpt: "Has anyone had this procedure?",
+}, canonicalPostUrl, {
+  groupName: "Example Group",
+  groupUrl: "https://www.facebook.com/groups/example/",
+}), {
+  group_name: "Example Group",
+  group_url: "https://www.facebook.com/groups/example/",
+  content_url: canonicalPostUrl,
+  name: "Root Author",
+  profile_url: "",
+  source_type: "post",
+  published_at_text: "Hôm qua lúc 03:17",
+  text_excerpt: "Has anyone had this procedure?",
+});
+assert.equal(runner.normalizeBackfilledPostRoot({
+  post_url: "https://www.facebook.com/groups/example/posts/999/",
+  text_excerpt: "Wrong post",
+}, canonicalPostUrl), null);
 
 const ingest = runner.makeIngestCommand({ sourceDir: "C:\\staging", resultsDir: "C:\\results" });
 assert.equal(ingest.executable, process.execPath);

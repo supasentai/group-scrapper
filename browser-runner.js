@@ -4,16 +4,52 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const pilot = require("./fb-group-lead-pilot.js");
+const mergeResults = require("./merge-results.js");
 
 const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_MAX_RUNTIME_MS = 15 * 60 * 1000;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_CHILD_TIMEOUT_MS = 120 * 1000;
+const DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS = 120 * 1000;
 const DEFAULT_COLLECTOR_PATH = path.join(__dirname, "fb-group-lead-pilot.js");
 const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
 const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
 const TEMPORARY_DOWNLOAD_PATTERN = /\.(?:crdownload|part|tmp)$/i;
 const SCAN_FILENAME_PATTERN = /^fb_group_scan_(\d+)d_(.+)\.csv$/i;
+const PUBLISHED_TIME_UNITS = "m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm";
+const PUBLISHED_TIME_PATTERN = new RegExp(
+  `^(?:just now|now|vừa xong|hôm nay(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|hôm qua(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|today(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?|yesterday(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}(?:[T\\s].*)?|\\d+\\s*(?:${PUBLISHED_TIME_UNITS})(?:\\s+(?:ago|trước))?|\\d{1,2}\\s+tháng\\s+\\d{1,2}(?:\\s+năm\\s+\\d{4})?(?:\\s+lúc\\s+\\d{1,2}(?::\\d{2})?)?|\\d{1,2}\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\\s+\\d{2,4})?(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?)?)$`,
+  "i",
+);
+const EMBEDDED_PUBLISHED_TIME_PATTERN = new RegExp(
+  `(?<![\\d.,])\\d+\\s*(?:${PUBLISHED_TIME_UNITS})(?:\\s+(?:ago|trước))?(?![\\w])`,
+  "i",
+);
+
+function normalizePublishedTimeText(value) {
+  return String(value || "")
+    .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPublishedTimeText(value) {
+  const text = normalizePublishedTimeText(value);
+  return Boolean(text && text.length <= 100 && PUBLISHED_TIME_PATTERN.test(text));
+}
+
+function extractPublishedTimeText(value, { allowEmbedded = true } = {}) {
+  const normalized = normalizePublishedTimeText(value);
+  if (!normalized) return "";
+  const parts = normalized.split(/\r?\n|[·•]/).map((part) => part.trim()).filter(Boolean);
+  for (const part of parts) {
+    if (isPublishedTimeText(part)) return part;
+  }
+  if (!allowEmbedded) return "";
+  const embedded = normalized.match(EMBEDDED_PUBLISHED_TIME_PATTERN);
+  return embedded ? embedded[0].trim() : "";
+}
 
 function usage() {
   return [
@@ -33,6 +69,7 @@ function usage() {
     "  --profile-dir <path>       Dedicated Edge profile directory for instructions",
     "  --download-timeout-ms <n>  Download wait timeout",
     "  --child-timeout-ms <n>     Ingestion/merge subprocess timeout",
+    "  --post-root-timeout-ms <n> Post-root backfill budget (default 120000)",
   ].join("\n");
 }
 
@@ -93,12 +130,13 @@ function parseArgs(argv = process.argv.slice(2)) {
     profileDir: path.join(os.homedir(), "AppData", "Local", "Microsoft", "Edge", "User Data", "CodexGroupScraper"),
     downloadTimeoutMs: DEFAULT_DOWNLOAD_TIMEOUT_MS,
     childTimeoutMs: DEFAULT_CHILD_TIMEOUT_MS,
+    postRootBackfillTimeoutMs: DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
     prepareProfile: false,
     help: false,
   };
   const valueFlags = new Set([
     "--group-url", "--group-name", "--collector-path", "--cdp-endpoint", "--days", "--capture-mode", "--max-rounds",
-    "--max-runtime-ms", "--results-dir", "--checkpoints-file", "--profile-dir", "--download-timeout-ms", "--child-timeout-ms",
+    "--max-runtime-ms", "--results-dir", "--checkpoints-file", "--profile-dir", "--download-timeout-ms", "--child-timeout-ms", "--post-root-timeout-ms",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -130,6 +168,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
     else if (flag === "--child-timeout-ms") config.childTimeoutMs = parsePositiveInteger(value, flag);
+    else if (flag === "--post-root-timeout-ms") config.postRootBackfillTimeoutMs = parsePositiveInteger(value, flag);
   }
   if (!config.help && !config.prepareProfile && !config.groupUrl) {
     throw new Error("--group-url is required unless --prepare-profile is used");
@@ -158,6 +197,329 @@ function buildCollectorOptions(config) {
     maxRuntimeMs: config.maxRuntimeMs,
     groupName: config.groupName || "",
   };
+}
+
+function postRootUrlFromRow(row) {
+  return pilot.canonicalPostUrl(row?.content_url || row?.post_url || "");
+}
+
+function uniquePostRootUrls(rows) {
+  return [...new Set((rows || []).map(postRootUrlFromRow).filter(Boolean))];
+}
+
+function normalizeBackfilledPostRoot(candidate, expectedPostUrl, context = {}) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const expected = pilot.canonicalPostUrl(expectedPostUrl);
+  const postUrl = pilot.canonicalPostUrl(candidate.post_url || candidate.content_url || candidate.permalink);
+  if (!expected || !postUrl || postUrl !== expected) return null;
+  const rawText = String(candidate.text_excerpt || candidate.text || "").trim();
+  if (!rawText) return null;
+  const text = pilot.cleanSourceText(
+    rawText,
+    String(candidate.name || "").trim(),
+    String(candidate.published_at_text || "").trim(),
+  );
+  if (!text) return null;
+  const name = String(candidate.name || "").trim();
+  const publishedAtText = String(candidate.published_at_text || candidate.published_at || "").trim();
+  // A root is accepted only when the page exposed all identifying fields we
+  // need to distinguish it from a comment-shaped DOM node. Missing author or
+  // time stays in the original comment context instead of becoming a partial
+  // synthetic post.
+  if (!name || !publishedAtText) return null;
+  return {
+    group_name: context.groupName || candidate.group_name || "",
+    group_url: context.groupUrl || candidate.group_url || "",
+    content_url: postUrl,
+    name,
+    profile_url: String(candidate.profile_url || "").trim(),
+    source_type: "post",
+    published_at_text: publishedAtText,
+    text_excerpt: text,
+  };
+}
+
+function deduplicateBackfilledPostRoots(rows) {
+  const seen = new Set();
+  const deduped = [];
+  for (const row of rows || []) {
+    const postUrl = pilot.canonicalPostUrl(row?.content_url || row?.post_url || "");
+    if (!postUrl || seen.has(postUrl)) continue;
+    seen.add(postUrl);
+    deduped.push({ ...row, content_url: postUrl, source_type: "post" });
+  }
+  return deduped;
+}
+
+async function readPostRootCandidates(page, expectedPostUrl = "") {
+  return page.evaluate((expectedUrl) => {
+    // Facebook sometimes inserts U+034F and other format characters between
+    // the number and unit in relative timestamps (for example `25͏ phút`).
+    // Remove them before matching time, author, and message text.
+    const normalize = (value) => String(value || "")
+      .replace(/[\p{Cf}\u034f]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const hrefOf = (node) => node?.href || node?.getAttribute?.("href") || "";
+    const safeUrl = (value) => {
+      try { return new URL(value || "", location.href); } catch (_error) { return null; }
+    };
+    const normalizedPath = (value) => {
+      const url = safeUrl(value);
+      return url ? url.pathname.replace(/\/+$/, "/") : "";
+    };
+    const expectedPath = normalizedPath(expectedUrl);
+    const hasCommentIdentity = (href) => {
+      const url = safeUrl(href);
+      return Boolean(url && (url.searchParams.has("comment_id") || url.searchParams.has("reply_comment_id")));
+    };
+    const isPostHref = (href) => {
+      const url = safeUrl(href);
+      return Boolean(url
+        && /\/groups\/[^/]+\/posts\/\d+\/?$/i.test(url.pathname)
+        && !hasCommentIdentity(href));
+    };
+    const storyMessages = [...document.querySelectorAll('[data-ad-rendering-role="story_message"]')];
+    const storySelector = '[data-ad-rendering-role="story_message"]';
+    const titleHints = String(document.title || "")
+      .split("|")
+      .map(normalize)
+      .filter((part, index, parts) => part && index > 0 && !/^facebook$/i.test(part) && part !== parts[0]);
+    const compact = (value) => normalize(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const titleMatchesText = (text) => {
+      const compactText = compact(text);
+      if (compactText.length < 12) return false;
+      return titleHints.some((hint) => {
+        const compactHint = compact(hint);
+        if (compactHint.length < 12) return false;
+        const probe = compactHint.slice(0, 60);
+        return compactText.includes(probe) || compactHint.includes(compactText.slice(0, 60));
+      });
+    };
+    const looksLikeTime = (value) => {
+      const text = normalize(value)
+        .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!text || text.length > 100) return false;
+      return /^(?:just now|now|vừa xong|hôm nay(?:\s+lúc\s+\d{1,2}(?::\d{2})?)?|hôm qua(?:\s+lúc\s+\d{1,2}(?::\d{2})?)?|today(?:\s+at\s+\d{1,2}(?::\d{2})?)?|yesterday(?:\s+at\s+\d{1,2}(?::\d{2})?)?|\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[T\s].*)?|\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm)(?:\s+(?:ago|trước))?|\d{1,2}\s+tháng\s+\d{1,2}(?:\s+năm\s+\d{4})?(?:\s+lúc\s+\d{1,2}(?::\d{2})?)?|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\s+\d{2,4})?(?:\s+at\s+\d{1,2}(?::\d{2})?)?)$/i.test(text);
+    };
+    const extractTime = (value, { allowEmbedded = true } = {}) => {
+      const normalized = normalize(value)
+        .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!normalized) return "";
+      const parts = normalized.split(/\r?\n|[·•]/).map((part) => part.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (looksLikeTime(part)) return part;
+      }
+      if (!allowEmbedded) return "";
+      const embedded = normalized.match(/(?<![\d.,])\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm)(?:\s+(?:ago|trước))?(?![\w])/i);
+      return embedded ? embedded[0].trim() : "";
+    };
+    const textLines = (node) => String(node?.innerText || node?.textContent || "")
+      .split(/\r?\n/)
+      .map(normalize)
+      .filter(Boolean);
+    const authorLinkFor = (links) => links.find((link) => {
+      const href = hrefOf(link);
+      const url = safeUrl(href);
+      const text = normalize(link.innerText || link.textContent || link.getAttribute("aria-label"));
+      const pathname = url?.pathname || "";
+      return Boolean(text)
+        && !/\/groups\/[^/]+\/posts\//i.test(pathname)
+        && !hasCommentIdentity(href)
+        && !/\/groups\/[^/]+\/?$/i.test(pathname)
+        && (/\/user\//i.test(pathname)
+          || /\/profile\.php/i.test(pathname)
+          || /^\/\d+\/?$/i.test(pathname));
+    });
+    const valuesFor = (link) => [
+      link?.getAttribute("aria-label"),
+      link?.getAttribute("title"),
+      link?.getAttribute("data-tooltip-content"),
+      link?.innerText,
+      link?.textContent,
+    ].map(normalize).filter(Boolean);
+    const timeFor = (scope, postLinks) => {
+      const timeNodeValues = [...scope.querySelectorAll("time[datetime], [datetime]")]
+        .flatMap((node) => [node.getAttribute("datetime"), node.innerText, node.textContent])
+        .map(normalize)
+        .filter(Boolean);
+      const postLinkValues = postLinks.flatMap(valuesFor);
+      const lineValues = textLines(scope);
+      const fromTimeNode = timeNodeValues.map((value) => extractTime(value, { allowEmbedded: false })).find(Boolean);
+      if (fromTimeNode) return fromTimeNode;
+      const fromPostLink = postLinkValues.map((value) => extractTime(value)).find(Boolean);
+      if (fromPostLink) return fromPostLink;
+      return lineValues.map((value) => extractTime(value, { allowEmbedded: false })).find(Boolean) || "";
+    };
+    const scopeFor = (message) => {
+      const scopes = [];
+      let node = message;
+      for (let depth = 0; node && depth <= 14; depth += 1, node = node.parentElement) {
+        const links = [...node.querySelectorAll("a[href]")];
+        const postLinks = links.filter((link) => isPostHref(hrefOf(link)));
+        const matchingPostLinks = expectedPath
+          ? postLinks.filter((link) => normalizedPath(hrefOf(link)) === expectedPath)
+          : postLinks;
+        if (!matchingPostLinks.length) continue;
+        // A page can retain a previous story while the requested post is
+        // hydrating. An outer feed container may then expose links for both
+        // stories; reject that container so stale text cannot be paired with
+        // the requested post URL.
+        const storyCount = (node.matches?.(storySelector) ? 1 : 0) + node.querySelectorAll(storySelector).length;
+        if (storyCount > 1) continue;
+        const postLink = matchingPostLinks[0];
+        const authorLink = authorLinkFor(links);
+        const timeText = timeFor(node, matchingPostLinks);
+        const virtualized = node.getAttribute("data-virtualized") === "false";
+        // Prefer the smallest ancestor that has enough root evidence, while
+        // retaining the known virtualized card as a strong fallback.
+        const score = (authorLink ? 5 : 0) + (timeText ? 4 : 0) + (virtualized ? 3 : 0) - (depth * 0.05);
+        scopes.push({ node, depth, postLink, authorLink, timeText, score });
+      }
+      return scopes.sort((left, right) => right.score - left.score || left.depth - right.depth)[0] || null;
+    };
+    const candidates = storyMessages.map((message) => {
+      // Expand only controls belonging to this story. The next polling pass
+      // reads the DOM after Facebook has rendered the expanded text.
+      let expandableAncestor = message;
+      for (let depth = 0; expandableAncestor && depth <= 10; depth += 1, expandableAncestor = expandableAncestor.parentElement) {
+        for (const control of expandableAncestor.querySelectorAll('button, [role="button"], a')) {
+          const label = normalize(control.innerText || control.textContent || control.getAttribute("aria-label"));
+          if (/^(?:xem thêm|see more|read more|view more)(?:\.{3})?$/i.test(label)) {
+            try { control.click(); } catch (_error) { /* best-effort expansion */ }
+          }
+        }
+      }
+      const scope = scopeFor(message);
+      if (!scope) return null;
+      const messageNode = message.querySelector('[data-ad-preview="message"]') || message;
+      const rawMessage = normalize(messageNode.innerText || messageNode.textContent);
+      return {
+        post_url: hrefOf(scope.postLink),
+        name: normalize(scope.authorLink?.innerText || scope.authorLink?.textContent || scope.authorLink?.getAttribute("aria-label")),
+        profile_url: hrefOf(scope.authorLink),
+        published_at_text: scope.timeText,
+        text_excerpt: rawMessage,
+        title_match: titleMatchesText(rawMessage),
+      };
+    }).filter((candidate) => candidate && candidate.post_url && candidate.text_excerpt);
+    const titleMatched = candidates.filter((candidate) => candidate.title_match);
+    // During navigation Facebook may expose a stale story with the new
+    // permalink before the requested story text is hydrated. If the page has
+    // a usable post title, wait for a matching story instead of pairing stale
+    // content with the requested URL. Pages without a title hint retain the
+    // structural fallback behavior.
+    if (titleHints.length) return titleMatched;
+    return candidates;
+  }, expectedPostUrl);
+}
+
+async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "", timeoutMs = DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS }) {
+  const rootUrls = uniquePostRootUrls(rows);
+  const existingPostUrls = new Set((rows || [])
+    .filter((row) => String(row?.source_type || "").toLowerCase() === "post")
+    .map(postRootUrlFromRow)
+    .filter(Boolean));
+  const candidates = [];
+  const stats = {
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    deduplicated: 0,
+    failed_urls: [],
+    quality_flags: [],
+  };
+  const pendingUrls = rootUrls.filter((url) => {
+    if (existingPostUrls.has(url)) {
+      stats.deduplicated += 1;
+      return false;
+    }
+    return true;
+  });
+  if (!pendingUrls.length) return { rows: [...(rows || [])], stats };
+
+  const startedAt = Date.now();
+  for (const postUrl of pendingUrls) {
+      stats.attempted += 1;
+      const remaining = Number(timeoutMs) - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        stats.failed += 1;
+        stats.failed_urls.push({ post_url: postUrl, reason: "post_root_backfill_timeout" });
+        continue;
+      }
+      let backfilledRoot = null;
+      let lastError = "post_root_not_found";
+      // A fresh retry handles a transient Facebook hydration race without
+      // allowing an unverified candidate to become a synthetic post.
+      for (let attempt = 0; attempt < 2 && !backfilledRoot; attempt += 1) {
+        let backfillPage = null;
+        try {
+          // Use a fresh sequential tab for each attempt. Reusing a Facebook
+          // page can leave the previous story in the DOM while the new URL and
+          // permalink have already changed, which risks stale text/URL pairs.
+          backfillPage = await context.newPage();
+          await backfillPage.goto(postUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(20_000, Number(timeoutMs) - (Date.now() - startedAt)),
+          });
+          if (typeof backfillPage.waitForLoadState === "function") {
+            await backfillPage.waitForLoadState("load", {
+              timeout: Math.min(5_000, Number(timeoutMs) - (Date.now() - startedAt)),
+            }).catch(() => {});
+          }
+          let rawCandidates = [];
+          const readBudget = Math.max(1_000, Math.min(20_000, Number(timeoutMs) - (Date.now() - startedAt)));
+          await waitFor(async () => {
+            try {
+              rawCandidates = await readPostRootCandidates(backfillPage, postUrl);
+              return rawCandidates.length > 0;
+            } catch (_error) {
+              return false;
+            }
+          }, readBudget, 350);
+          const root = deduplicateBackfilledPostRoots(rawCandidates
+            .map((candidate) => normalizeBackfilledPostRoot(candidate, postUrl, { groupName, groupUrl })));
+          if (root.length && root[0].content_url === postUrl) backfilledRoot = root[0];
+          else lastError = "post_root_not_found";
+        } catch (error) {
+          lastError = String(error.message || error).slice(0, 240);
+        } finally {
+          if (backfillPage?.close) await backfillPage.close().catch(() => {});
+        }
+      }
+      if (!backfilledRoot) {
+        stats.failed += 1;
+        stats.failed_urls.push({ post_url: postUrl, reason: lastError });
+        continue;
+      }
+      candidates.push(backfilledRoot);
+      existingPostUrls.add(postUrl);
+      stats.succeeded += 1;
+  }
+  if (stats.failed > 0) stats.quality_flags.push("post_root_backfill_failed");
+  const uniqueCandidates = deduplicateBackfilledPostRoots(candidates);
+  return { rows: [...(rows || []), ...uniqueCandidates], stats };
+}
+
+function updateManifestWithPostRootBackfill(manifestPath, manifest, stats, rowCount) {
+  const next = {
+    ...manifest,
+    row_count: rowCount,
+    post_root_backfill: {
+      attempted: stats.attempted,
+      succeeded: stats.succeeded,
+      failed: stats.failed,
+      deduplicated: stats.deduplicated,
+      failed_urls: stats.failed_urls,
+      quality_flags: stats.quality_flags,
+    },
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return next;
 }
 
 function makeIngestCommand({ sourceDir, resultsDir }) {
@@ -279,15 +641,28 @@ function updateCheckpointManifest({ filePath, groupUrl, groupName, lastRun }) {
   if (currentCheckpoint && new Date(checkpoint).getTime() <= new Date(currentCheckpoint).getTime()) {
     return { updated: false, reason: "checkpoint_not_new", checkpoint: currentCheckpoint };
   }
+  const previousLastRun = current.last_run && typeof current.last_run === "object"
+    ? current.last_run
+    : {};
+  const startedAt = normalizeCheckpoint(
+    lastRun.scan_started_at
+      || lastRun.started_at
+      || previousLastRun.scan_started_at
+      || previousLastRun.started_at
+      || new Date().toISOString(),
+  );
+  const completedAt = normalizeCheckpoint(lastRun.completed_at || new Date().toISOString());
   const nextRecord = {
     ...current,
     group_url: canonicalGroupUrl,
     group_name: String(lastRun.group_name || groupName || current.group_name || "").trim(),
     checkpoint,
     last_run: {
-      status: lastRun.run_status || null,
-      scan_started_at: lastRun.scan_started_at || null,
-      completed_at: lastRun.completed_at || null,
+      ...previousLastRun,
+      status: lastRun.run_status || lastRun.status || previousLastRun.status || null,
+      scan_started_at: startedAt,
+      started_at: startedAt,
+      completed_at: completedAt,
       checkpoint_saved: true,
       checkpoint,
       run_id: lastRun.run_id || null,
@@ -315,6 +690,7 @@ function runCommand(command, timeoutMs = DEFAULT_CHILD_TIMEOUT_MS) {
     killSignal: "SIGTERM",
   });
   const timedOut = result.error?.code === "ETIMEDOUT";
+  if (timedOut) terminateProcessTree(result.pid);
   return {
     ...command,
     exitCode: timedOut ? 124 : (result.status === null ? 1 : result.status),
@@ -375,6 +751,18 @@ function withTimeout(promise, timeoutMs, message) {
     timer = setTimeout(() => reject(new Error(message)), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function terminateProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+  try { process.kill(-pid, "SIGTERM"); } catch (_error) { /* already exited */ }
 }
 
 async function runBrowser(config, dependencies = {}) {
@@ -456,18 +844,45 @@ async function runBrowser(config, dependencies = {}) {
     if (!pairReady || !pair) throw new Error("Expected scan CSV and manifest downloads were not both found");
     files.csv = path.join(stagingDir, pair.csv);
     files.manifest = path.join(stagingDir, pair.manifest);
-    const manifest = JSON.parse(fs.readFileSync(files.manifest, "utf8").replace(/^\uFEFF/, ""));
+    let manifest = JSON.parse(fs.readFileSync(files.manifest, "utf8").replace(/^\uFEFF/, ""));
     files.run_id = manifest.run_id;
     files.status = manifest.status;
     files.row_count = manifest.row_count;
 
-    if (manifest.status === "stopped") {
+    // A stopped/partial collector still produced a valid read-only artifact.
+    // Backfill parent posts before deciding whether ingestion/merge/checkpoint
+    // are safe; previously this early return made stopped runs lose the
+    // post_root_backfill phase entirely.
+    const scanRows = mergeResults.parseCsv(fs.readFileSync(files.csv, "utf8"));
+    const backfill = await backfillPostRoots({
+      context,
+      rows: scanRows,
+      groupName: config.groupName,
+      groupUrl: config.groupUrl,
+      timeoutMs: config.postRootBackfillTimeoutMs || DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
+    });
+    if (backfill.rows.length !== scanRows.length) {
+      fs.writeFileSync(files.csv, pilot.buildCsv(backfill.rows), "utf8");
+    }
+    manifest = updateManifestWithPostRootBackfill(
+      files.manifest,
+      manifest,
+      backfill.stats,
+      backfill.rows.length,
+    );
+    files.post_root_backfill = backfill.stats;
+    files.row_count = manifest.row_count;
+
+    if (["stopped", "partial"].includes(String(manifest.status || "").toLowerCase())) {
+      files.collector_status = manifest.status;
+      files.backfill_only = true;
       return {
         status: "stopped",
         run_id: manifest.run_id,
         files,
         needs_user_action: null,
-        error: "Collector stopped; artifact retained and ingestion/merge were skipped.",
+        row_count: manifest.row_count,
+        error: "Collector stopped/partial; post-root backfill ran read-only, ingestion/merge/checkpoint were skipped.",
       };
     }
 
@@ -551,16 +966,25 @@ if (require.main === module) {
 
 module.exports = {
   buildCollectorOptions,
+  backfillPostRoots,
   buildEdgeLaunchCommand,
+  DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
+  deduplicateBackfilledPostRoots,
   findDownloadPair,
   isScanFilename,
   loadCheckpointMap,
   makeIngestCommand,
   makeMergeCommand,
   manifestFilenameFor,
+  normalizePublishedTimeText,
   parseArgs,
+  normalizeBackfilledPostRoot,
+  postRootUrlFromRow,
+  readPostRootCandidates,
   runBrowser,
   safeDownloadName,
+  extractPublishedTimeText,
+  isPublishedTimeText,
   updateCheckpointManifest,
   validateCdpEndpoint,
   validateGroupName,

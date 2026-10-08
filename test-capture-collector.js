@@ -10,6 +10,14 @@ assert.doesNotMatch(collectorSource, /text\.length\s*<\s*12/);
 
 assert.equal(pilot.CONFIG.captureMode, "all");
 assert.equal(pilot.CONFIG.deferClassification, true);
+assert.deepEqual(
+  pilot.extractCommentPermalinkFromValue("https://www.facebook.com/groups/capture/posts/1/?comment_id=123", "https://www.facebook.com/groups/capture/posts/1/"),
+  { url: "https://www.facebook.com/groups/capture/posts/1/?comment_id=123", sourceType: "comment" },
+);
+assert.deepEqual(
+  pilot.extractCommentPermalinkFromValue('data-comment-id="456"', "https://www.facebook.com/groups/capture/posts/1/"),
+  { url: "https://www.facebook.com/groups/capture/posts/1/?comment_id=456", sourceType: "comment" },
+);
 
 const groupUrl = "https://www.facebook.com/groups/capture/";
 const postUrl = `${groupUrl}posts/1/`;
@@ -35,6 +43,36 @@ assert.ok(captured.some((row) => row.text_excerpt.includes("discount")));
 assert.ok(captured.some((row) => row.text_excerpt === "Same here."));
 assert.ok(captured.some((row) => row.published_at_text === "time unavailable" && row.data_quality_flags.includes("missing_or_unparsed_time")));
 assert.equal(captured.some((row) => row.text_excerpt.includes("Xem bản dịch")), false);
+
+const unresolvedComment = pilot.captureRecords([{
+  key: "unresolved-comment",
+  name: "Unresolved Comment",
+  source_type: "comment",
+  post_url: postUrl,
+  comment_url: postUrl,
+  published_at: "2026-10-07T10:07:00.000Z",
+  text: "A comment without a permalink must not inherit the post URL.",
+}], { groupName: "Capture Group", groupUrl })[0];
+assert.equal(unresolvedComment.source_type, "unresolved");
+assert.equal(unresolvedComment.comment_url, "");
+assert.equal(unresolvedComment.content_url, "");
+assert.match(unresolvedComment.data_quality_flags, /source_type_unresolved/);
+assert.match(unresolvedComment.data_quality_flags, /comment_permalink_missing/);
+
+const commentUrlCopiedFromPost = pilot.captureRecords([{
+  key: "comment-url-copied-from-post",
+  name: "Copied URL Comment",
+  source_type: "comment",
+  post_url: postUrl,
+  content_url: postUrl,
+  comment_url: postUrl,
+  published_at: "2026-10-07T10:08:00.000Z",
+  text: "A copied post URL must fail closed.",
+}], { groupName: "Capture Group", groupUrl })[0];
+assert.equal(commentUrlCopiedFromPost.source_type, "unresolved");
+assert.equal(commentUrlCopiedFromPost.content_url, "");
+assert.equal(commentUrlCopiedFromPost.comment_url, "");
+assert.match(commentUrlCopiedFromPost.data_quality_flags, /comment_permalink_missing/);
 
 const classifiedCaptured = pilot.classifyRecords(captured, { groupName: "Capture Group", groupUrl });
 assert.equal(classifiedCaptured.length, captured.length);

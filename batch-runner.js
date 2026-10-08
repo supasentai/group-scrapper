@@ -30,12 +30,13 @@ function usage() {
     "  --capture-mode <mode>      Collector mode: all (default) or classified",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
     "  --max-runtime-ms <n>       Per-group collector runtime (default 900000)",
-    "  --child-timeout-ms <n>     Per-group browser-runner process timeout",
+    "  --child-timeout-ms <n>     Ingestion/merge timeout; outer watchdog is derived safely",
     "  --runner-path <path>       Browser runner script",
     "  --collector-path <path>   Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint",
     "  --profile-dir <path>       Dedicated Edge profile directory",
     "  --download-timeout-ms <n>  Download wait timeout",
+    "  --post-root-timeout-ms <n> Post-root backfill budget (default 120000)",
   ].join("\n");
 }
 
@@ -53,6 +54,33 @@ function parseRetryStatuses(value) {
     throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action");
   }
   return statuses;
+}
+
+function runnerTimeoutMs(config) {
+  // The checkpoint boundary is the normal stop condition. This is only a
+  // watchdog for a stuck browser/DOM/download/merge path, so it must always
+  // outlive the collector budget and its cleanup steps.
+  const collector = Number(config.maxRuntimeMs) || DEFAULT_MAX_RUNTIME_MS;
+  const download = Number(config.downloadTimeoutMs) || 60 * 1000;
+  const child = Number(config.childTimeoutMs) || DEFAULT_CHILD_TIMEOUT_MS;
+  const postRoot = Number(config.postRootBackfillTimeoutMs)
+    || browserRunner.DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS;
+  return Math.max(
+    child,
+    collector + 60 * 1000 + download + postRoot + (child * 2) + 15 * 1000,
+  );
+}
+
+function terminateProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+  try { process.kill(-pid, "SIGTERM"); } catch (_error) { /* already exited */ }
 }
 
 function parseCsvRows(input) {
@@ -246,12 +274,13 @@ function parseArgs(argv = process.argv.slice(2)) {
     cdpEndpoint: "http://127.0.0.1:9222",
     profileDir: path.join(os.homedir(), "AppData", "Local", "Microsoft", "Edge", "User Data", "CodexGroupScraper"),
     downloadTimeoutMs: 60 * 1000,
+    postRootBackfillTimeoutMs: browserRunner.DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
     help: false,
   };
   const valueFlags = new Set([
     "--groups-file", "--checkpoints-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms",
     "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint",
-    "--profile-dir", "--download-timeout-ms",
+    "--profile-dir", "--download-timeout-ms", "--post-root-timeout-ms",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -281,6 +310,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--cdp-endpoint") config.cdpEndpoint = browserRunner.validateCdpEndpoint(value);
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
+    else if (flag === "--post-root-timeout-ms") config.postRootBackfillTimeoutMs = parsePositiveInteger(value, flag);
   }
   if (!config.help && !config.groupsFile && !config.checkpointsFile) throw new Error("--checkpoints-file or --groups-file is required");
   return config;
@@ -446,21 +476,24 @@ function makeRunnerArgs(group, config) {
     "--checkpoints-file", checkpointsFile,
     "--profile-dir", config.profileDir,
     "--download-timeout-ms", String(config.downloadTimeoutMs),
+    "--post-root-timeout-ms", String(config.postRootBackfillTimeoutMs),
     "--child-timeout-ms", String(config.childTimeoutMs),
   ];
 }
 
 function invokeBrowserRunner(group, config) {
   const command = { executable: process.execPath, args: makeRunnerArgs(group, config) };
+  const timeoutMs = runnerTimeoutMs(config);
   const result = spawnSync(command.executable, command.args, {
     cwd: __dirname,
     encoding: "utf8",
     windowsHide: true,
-    timeout: config.childTimeoutMs,
+    timeout: timeoutMs,
     killSignal: "SIGTERM",
   });
   if (result.error?.code === "ETIMEDOUT") {
-    return { status: "error", error: `browser_runner_timeout_after_${config.childTimeoutMs}ms`, child_timed_out: true };
+    terminateProcessTree(result.pid);
+    return { status: "error", error: `browser_runner_timeout_after_${timeoutMs}ms`, child_timed_out: true, timeout_ms: timeoutMs };
   }
   const summary = parseJsonOutput(result.stdout);
   if (!summary) {
@@ -626,6 +659,7 @@ function runBatch(config, dependencies = {}) {
     resume_manifest_path: resumeManifest ? path.resolve(config.resumeManifest) : null,
     resume_input_hash_match: resumeManifest ? resumeManifest.input_hash === sha256(inputBuffer) : null,
     retry_statuses: config.retryStatuses || [],
+    runner_timeout_ms: runnerTimeoutMs(config),
     groups,
     counts,
     execution_counts: countExecutions(groups),
@@ -668,6 +702,7 @@ module.exports = {
   prepareEntries,
   runBatch,
   readResumeManifest,
+  runnerTimeoutMs,
   sha256,
   validateResumeMapping,
 };

@@ -36,7 +36,10 @@
     days: 30,
     scrollIntervalMs: 2200,
     maxIdleRounds: 12,
-    maxOldPostRounds: 6,
+    // One round past the checkpoint is enough to prove the feed crossed the
+    // boundary. Additional rounds only add latency and increase CDP timeout
+    // risk without expanding the requested time window.
+    maxOldPostRounds: 1,
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
@@ -669,6 +672,53 @@
     }
   }
 
+  function buildCommentPermalink(postUrl, sourceType, commentId) {
+    const normalizedPostUrl = canonicalPostUrl(postUrl);
+    const id = normalizeSpace(commentId);
+    if (!normalizedPostUrl || !id || !/^\d+$/.test(id)) return null;
+    const parameter = sourceType === "reply" ? "reply_comment_id" : "comment_id";
+    return `${normalizedPostUrl}?${parameter}=${encodeURIComponent(id)}`;
+  }
+
+  function extractCommentPermalinkFromValue(value, postUrl) {
+    const raw = String(value || "");
+    if (!raw) return null;
+    const explicitUrl = canonicalContentUrl(raw);
+    if (explicitUrl && /reply_comment_id=/i.test(raw)) {
+      return { url: explicitUrl, sourceType: "reply" };
+    }
+    if (explicitUrl && /comment_id=/i.test(raw)) {
+      return { url: explicitUrl, sourceType: "comment" };
+    }
+
+    const replyMatch = raw.match(/(?:reply[_-]?comment[_-]?id|data-reply-comment-id)\s*[=:]\s*["']?(\d+)/i);
+    if (replyMatch) {
+      const url = buildCommentPermalink(postUrl, "reply", replyMatch[1]);
+      if (url) return { url, sourceType: "reply" };
+    }
+    const commentMatch = raw.match(/(?:comment[_-]?id|data-comment-id)\s*[=:]\s*["']?(\d+)/i);
+    if (commentMatch) {
+      const url = buildCommentPermalink(postUrl, "comment", commentMatch[1]);
+      if (url) return { url, sourceType: "comment" };
+    }
+    return null;
+  }
+
+  function extractCommentPermalink(article, postUrl) {
+    if (!article || !postUrl) return null;
+    const own = getOwnArticleClone(article);
+    const nodes = [own, ...own.querySelectorAll("a[href], [data-comment-id], [data-reply-comment-id], [id*='comment' i]")];
+    const attributes = ["href", "data-comment-id", "data-reply-comment-id", "id", "aria-label"];
+    for (const node of nodes) {
+      for (const attribute of attributes) {
+        const value = node.getAttribute?.(attribute);
+        const match = extractCommentPermalinkFromValue(value, postUrl);
+        if (match) return match;
+      }
+    }
+    return null;
+  }
+
   function getOwnArticleClone(article) {
     const clone = article.cloneNode(true);
     clone.querySelectorAll('div[role="article"]').forEach((nested) => nested.remove());
@@ -724,19 +774,23 @@
 
     // A root article can contain permalink links belonging to its comments.
     // Its own content URL must always remain the post permalink.
-    if (isRootArticle && postLink) {
-      return { url: canonicalContentUrl(postLink.href) || postUrl, sourceType: "post" };
+    if (isRootArticle) return { url: postUrl, sourceType: "post" };
+
+    if (commentLink) {
+      const url = canonicalContentUrl(commentLink.href);
+      return {
+        url: url || "",
+        sourceType: /reply_comment_id=/i.test(commentLink.href) ? "reply" : "comment",
+      };
     }
 
-    const link = commentLink || postLink || candidates[0];
-    if (!link) return { url: postUrl, sourceType: "post" };
-    const url = canonicalContentUrl(link.href) || postUrl;
-    const sourceType = /reply_comment_id=/i.test(link.href)
-      ? "reply"
-      : /comment_id=/i.test(link.href)
-        ? "comment"
-        : "post";
-    return { url, sourceType };
+    const dataPermalink = extractCommentPermalink(article, postUrl);
+    if (dataPermalink) return dataPermalink;
+
+    // A post-shaped article without a unique comment identity is not a post.
+    // Keep it as unresolved rather than assigning the parent post URL as a
+    // fake comment permalink.
+    return { url: "", sourceType: "unresolved" };
   }
 
   function findTimeText(article, postUrl) {
@@ -786,62 +840,10 @@
   function inferSourceType(isRootArticle, contentLinkType, articleDepth) {
     if (isRootArticle) return "post";
     if (contentLinkType && contentLinkType !== "post") return contentLinkType;
-    return articleDepth >= 2 ? "reply" : "comment";
-  }
-
-  function hasExplicitCommentEvidence(record) {
-    const sourceType = normalizeSpace(record?.source_type).toLowerCase();
-    if (sourceType === "comment" || sourceType === "reply") return true;
-    const postUrl = canonicalPostUrl(record?.post_url || "");
-    const contentUrl = canonicalContentUrl(record?.comment_url || record?.content_url || "");
-    if (/(?:comment_id|reply_comment_id)=/i.test(`${record?.comment_url || ""} ${record?.content_url || ""}`)) {
-      return true;
-    }
-    return Boolean(postUrl && contentUrl && contentUrl !== postUrl);
-  }
-
-  function recordClassificationIdentity(record) {
-    const author = normalizeSpace(record?.profile_url)
-      || `name:${normalizeSpace(record?.name).toLowerCase() || "unknown"}`;
-    return `${author}::${textFingerprint(record?.text || "")}`;
-  }
-
-  function inferDuplicatePostComments(records) {
-    const byPost = new Map();
-    for (const record of records) {
-      const postUrl = canonicalPostUrl(record?.post_url || record?.content_url || "");
-      if (!postUrl) continue;
-      if (!byPost.has(postUrl)) byPost.set(postUrl, []);
-      byPost.get(postUrl).push(record);
-    }
-
-    for (const group of byPost.values()) {
-      let rootSeen = false;
-      const seenIdentities = new Set();
-      for (const record of group) {
-        const identity = recordClassificationIdentity(record);
-        const explicit = hasExplicitCommentEvidence(record);
-        const sourceType = normalizeSpace(record?.source_type).toLowerCase();
-        if (!explicit && sourceType === "post") {
-          if (!rootSeen) {
-            rootSeen = true;
-          } else if (!seenIdentities.has(identity)) {
-            record.source_type = "comment";
-            record.comment_url = record.comment_url || canonicalPostUrl(record.post_url);
-            const flags = String(record.data_quality_flags || "")
-              .split(/[;|]/)
-              .map((flag) => flag.trim())
-              .filter(Boolean);
-            for (const flag of ["source_type_inferred", "comment_permalink_missing"]) {
-              if (!flags.includes(flag)) flags.push(flag);
-            }
-            record.data_quality_flags = flags.join("; ");
-          }
-        }
-        seenIdentities.add(identity);
-      }
-    }
-    return records;
+    // Never promote an article to comment/reply without a comment identity.
+    // Facebook sometimes renders comments as top-level role=article nodes;
+    // those rows remain unresolved until a permalink/id is visible.
+    return "unresolved";
   }
 
   function collectRenderedRecords() {
@@ -853,15 +855,16 @@
       const fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
       const postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
       if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
+      const rootHasOwnPostLink = Boolean(postLink);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];
       for (const article of uniqueArticles) {
         const articleDepth = getArticleDepth(article, rootArticle);
-        // Top-level Facebook articles are posts. A post article often contains
-        // comment permalinks in its subtree, so basing this only on the first
-        // link incorrectly turned every post into a comment.
-        const isPost = article === rootArticle;
+        // Facebook can render a comment as a top-level role=article node. A
+        // top-level node is a post only when it has its own post permalink;
+        // comment-only nodes must be resolved from their comment_id link.
+        const isPost = article === rootArticle && rootHasOwnPostLink;
         const contentLink = findContentLink(article, postUrl, isPost);
         const author = findAuthor(article);
         const timeText = findTimeText(article, postUrl);
@@ -870,7 +873,9 @@
         if (!text) continue;
 
         const sourceType = inferSourceType(isPost, contentLink.sourceType, articleDepth);
-        const contentUrl = sourceType === "post" ? postUrl : contentLink.url || postUrl;
+        // A comment/reply without its own permalink must never inherit the
+        // parent post URL. Keep it unresolved so it cannot become a lead.
+        const contentUrl = sourceType === "post" ? postUrl : (contentLink.url || "");
         const parsedTime = parseFacebookTime(timeText);
         const qualityFlags = [];
         if (!author.name) qualityFlags.push("author_missing");
@@ -878,7 +883,8 @@
         if (!timeText) qualityFlags.push("time_missing");
         if (hasFacebookChrome(rawText)) qualityFlags.push("ui_chrome_removed");
         if (/…\s*(?:Xem thêm|See more)/i.test(rawText)) qualityFlags.push("text_truncated");
-        if (sourceType !== "post" && contentUrl === postUrl) qualityFlags.push("comment_permalink_missing");
+        if (sourceType === "unresolved") qualityFlags.push("source_type_unresolved");
+        if (sourceType !== "post" && !contentLink.url) qualityFlags.push("comment_permalink_missing");
         const key = [contentUrl, sourceType, author.profileUrl || author.name, textFingerprint(text)].join("::");
         records.push({
           key,
@@ -887,7 +893,7 @@
           is_anonymous: author.isAnonymous,
           source_type: sourceType,
           post_url: postUrl,
-          comment_url: sourceType === "post" ? "" : contentUrl,
+          comment_url: ["comment", "reply"].includes(sourceType) ? contentLink.url : "",
           published_at_text: parsedTime?.toISOString() || timeText,
           published_at: parsedTime?.toISOString() || "",
           data_quality_flags: qualityFlags.join("; "),
@@ -905,10 +911,30 @@
       // Empty/UI-only records are the only content-level rows rejected here.
       // Short text is valid evidence and must remain in the capture output.
       if (!text) continue;
-      const sourceType = normalizeSpace(rawRecord.source_type).toLowerCase() || "post";
-      const postUrl = rawRecord.post_url || rawRecord.content_url || "";
-      const commentUrl = rawRecord.comment_url || (sourceType === "post" ? "" : postUrl);
-      const contentUrl = sourceType === "post" ? postUrl : (commentUrl || postUrl);
+      const declaredSourceType = normalizeSpace(rawRecord.source_type).toLowerCase() || "post";
+      const postUrl = canonicalPostUrl(rawRecord.post_url || rawRecord.content_url || "")
+        || rawRecord.post_url
+        || rawRecord.content_url
+        || "";
+      const contentCandidates = [rawRecord.comment_url, rawRecord.content_url]
+        .map((value) => canonicalContentUrl(value || ""))
+        .filter((value) => value && value !== postUrl);
+      const commentUrl = contentCandidates[0] || "";
+      const urlSourceType = /reply_comment_id=/i.test(commentUrl)
+        ? "reply"
+        : /comment_id=/i.test(commentUrl)
+          ? "comment"
+          : "";
+      const sourceType = declaredSourceType === "post" && urlSourceType
+        ? urlSourceType
+        : ["comment", "reply"].includes(declaredSourceType) && !commentUrl
+          ? "unresolved"
+          : declaredSourceType;
+      const contentUrl = sourceType === "post"
+        ? postUrl
+        : sourceType === "unresolved"
+          ? ""
+          : commentUrl;
       const parsedTime = rawRecord.published_at
         ? new Date(rawRecord.published_at)
         : parseFacebookTime(rawRecord.published_at_text);
@@ -922,6 +948,8 @@
       if (!rawRecord.name) addFlag("author_missing");
       if (!rawRecord.profile_url && !rawRecord.is_anonymous) addFlag("profile_missing");
       if (!parsedTime || Number.isNaN(parsedTime.getTime())) addFlag("missing_or_unparsed_time");
+      if (sourceType === "unresolved") addFlag("source_type_unresolved");
+      if (sourceType !== "post" && !commentUrl) addFlag("comment_permalink_missing");
       const key = rawRecord.key || [
         contentUrl,
         sourceType,
@@ -938,7 +966,7 @@
         is_anonymous: Boolean(rawRecord.is_anonymous),
         source_type: sourceType,
         post_url: postUrl,
-        comment_url: commentUrl,
+        comment_url: ["comment", "reply"].includes(sourceType) ? commentUrl : "",
         published_at: parsedTime && !Number.isNaN(parsedTime.getTime()) ? parsedTime.toISOString() : "",
         published_at_text: parsedTime && !Number.isNaN(parsedTime.getTime())
           ? parsedTime.toISOString()
@@ -952,12 +980,12 @@
   }
 
   function classifyRecords(rawRecords, groupContext = {}) {
-    const candidateRecords = inferDuplicatePostComments(rawRecords.filter((record) =>
+    const candidateRecords = rawRecords.filter((record) =>
       record && normalizeSpace(record.text ?? record.text_excerpt)
     ).map((record) => ({
       ...record,
       text: sanitizeRecordText(record),
-    })).filter((record) => normalizeSpace(record.text)));
+    })).filter((record) => normalizeSpace(record.text));
     const byAuthor = new Map();
     const byFingerprint = new Map();
     for (const record of candidateRecords) {
@@ -991,7 +1019,7 @@
         group_url: groupContext.groupUrl || "",
         content_url: record.source_type === "post"
           ? (record.post_url || "")
-          : (record.comment_url || record.post_url || ""),
+          : (record.comment_url || ""),
         content_assessment: contentAssessment,
         published_at: record.published_at,
         procedure: analysis.procedures,
@@ -1138,7 +1166,11 @@
     const labels = [
       /view more comments/i, /view \d+ (?:more )?comments?/i,
       /view \d+ replies?/i, /view \d+ more replies?/i,
+      /^\d+\s+(?:comments?|replies?)$/i, /^\d+\s+(?:bình luận|câu trả lời)$/i,
       /xem thêm bình luận/i, /xem \d+ câu trả lời/i,
+      /xem \d+ bình luận/i,
+      /^comments?$/i, /^replies?$/i, /^bình luận$/i, /^câu trả lời$/i,
+      /^view all$/i, /^xem tất cả$/i,
       /^see more$/i, /^xem thêm$/i,
     ];
     const buttons = [...new Set([
@@ -1302,6 +1334,8 @@
         group_name: groupContext.groupName || "",
         group_url: groupUrl,
         scan_started_at: scanStartedAt.toISOString(),
+        started_at: scanStartedAt.toISOString(),
+        completed_at: completedAt.toISOString(),
         previous_checkpoint: previousCheckpoint ? previousCheckpoint.toISOString() : null,
         checkpoint: result.checkpoint ? new Date(result.checkpoint).toISOString() : null,
         checkpoint_saved: checkpointSaved,
@@ -1327,6 +1361,8 @@
     buildCsv,
     captureRecords,
     canonicalContentUrl,
+    buildCommentPermalink,
+    extractCommentPermalinkFromValue,
     canonicalPostUrl,
     canonicalGroupUrl,
     classifyRecords,

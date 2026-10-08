@@ -245,7 +245,7 @@ assert.equal(
 assert.equal(pilot.inferSourceType(true, "comment", 0), "post");
 assert.equal(pilot.inferSourceType(true, "post", 0), "post");
 assert.equal(pilot.inferSourceType(false, "comment", 1), "comment");
-assert.equal(pilot.inferSourceType(false, "post", 2), "reply");
+assert.equal(pilot.inferSourceType(false, "post", 2), "unresolved");
 
 assert.equal(pilot.isLikelyAnonymousAlias("SunnyKangaroo8613"), true);
 assert.equal(pilot.isLikelyAnonymousAlias("PastelLychee5270"), true);
@@ -313,7 +313,7 @@ assert.equal(withAnonymous[1].profile_url, "");
 assert.equal(withAnonymous[2].name, "Named person");
 assert.equal(withAnonymous[2].data_quality_flags, "comment_permalink_missing");
 
-const postWithCommentUrl = pilot.classifyRecords([{
+const postWithCommentUrl = pilot.classifyRecords(pilot.captureRecords([{
   name: "Named person",
   profile_url: "https://www.facebook.com/123456789/",
   is_anonymous: false,
@@ -323,9 +323,10 @@ const postWithCommentUrl = pilot.classifyRecords([{
   published_at_text: "1h",
   published_at: "2026-09-16T11:00:00.000Z",
   text: "I had my facelift and the recovery was difficult.",
-}], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
-assert.equal(postWithCommentUrl[0].source_type, "post");
-assert.equal(postWithCommentUrl[0].content_url, "https://www.facebook.com/groups/123/posts/456/");
+}], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" }), { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
+assert.equal(postWithCommentUrl[0].source_type, "comment");
+assert.equal(postWithCommentUrl[0].content_url, "https://www.facebook.com/groups/123/posts/456/?comment_id=789");
+assert.equal(postWithCommentUrl[0].comment_url, "https://www.facebook.com/groups/123/posts/456/?comment_id=789");
 assert.equal(postWithCommentUrl[0].published_at_text, "2026-09-16T11:00:00.000Z");
 
 const duplicatePostUrlRows = pilot.classifyRecords([
@@ -361,10 +362,8 @@ const duplicatePostUrlRows = pilot.classifyRecords([
   },
 ], { groupName: "Test Group", groupUrl: "https://www.facebook.com/groups/123/" });
 assert.equal(duplicatePostUrlRows[0].source_type, "post");
-assert.equal(duplicatePostUrlRows[1].source_type, "comment");
-assert.equal(duplicatePostUrlRows[1].comment_url, "https://www.facebook.com/groups/123/posts/456/");
-assert.match(duplicatePostUrlRows[1].data_quality_flags, /source_type_inferred/);
-assert.match(duplicatePostUrlRows[1].data_quality_flags, /comment_permalink_missing/);
+assert.equal(duplicatePostUrlRows[1].source_type, "post");
+assert.equal(duplicatePostUrlRows[1].comment_url, "");
 assert.equal(duplicatePostUrlRows[2].source_type, "comment");
 assert.equal(duplicatePostUrlRows[2].comment_url, "https://www.facebook.com/groups/123/posts/456/?comment_id=789");
 
@@ -411,16 +410,17 @@ const mergedDuplicatePostRows = mergeResults.normalizeRows([
   {
     group_url: "https://www.facebook.com/groups/123/",
     content_url: duplicateScanPostUrl,
-    source_type: "post",
+    source_type: "",
     name: "Second Author",
     profile_url: "https://www.facebook.com/second-author/",
     published_at_text: "2026-09-16T11:10:00.000Z",
     text_excerpt: "I am considering a facelift and need recommendations.",
   },
 ], new Date("2026-09-17T12:00:00.000Z"));
-assert.deepEqual(mergedDuplicatePostRows.map((row) => row.source_type), ["post", "comment"]);
+assert.deepEqual(mergedDuplicatePostRows.map((row) => row.source_type), ["post", "unresolved"]);
 assert.match(mergedDuplicatePostRows[1].data_quality_flags, /source_type_inferred/);
 assert.match(mergedDuplicatePostRows[1].data_quality_flags, /comment_permalink_missing/);
+assert.match(mergedDuplicatePostRows[1].data_quality_flags, /source_type_unresolved/);
 const mergedPostClones = mergeResults.normalizeRows([
   {
     group_url: "https://www.facebook.com/groups/123/",
@@ -518,6 +518,34 @@ assert.equal(mergedScanRows[2].post_url, scanPostUrl);
 assert.equal(mergedScanRows[2].source_type, "reply");
 assert.equal(mergedScanRows[2].content_url, `${scanPostUrl}?reply_comment_id=790`);
 assert.equal(mergedScanRows[0].published_at, "2026-10-06T12:00:00.000Z");
+
+const copiedPostUrlComment = mergeResults.normalizeRows([{
+  group_url: "https://www.facebook.com/groups/123/",
+  post_url: scanPostUrl,
+  content_url: scanPostUrl,
+  comment_url: scanPostUrl,
+  source_type: "comment",
+  name: "Copied URL Comment",
+  published_at_text: "2026-10-06T12:07:00.000Z",
+  text_excerpt: "A comment whose URL was copied from the post.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(copiedPostUrlComment.source_type, "unresolved");
+assert.equal(copiedPostUrlComment.content_url, "");
+assert.equal(copiedPostUrlComment.comment_url, "");
+assert.match(copiedPostUrlComment.data_quality_flags, /comment_permalink_missing/);
+
+const mislabeledCommentPost = mergeResults.normalizeRows([{
+  group_url: "https://www.facebook.com/groups/123/",
+  post_url: scanPostUrl,
+  content_url: scanCommentUrl,
+  source_type: "post",
+  name: "Mislabeled Comment",
+  published_at_text: "2026-10-06T12:08:00.000Z",
+  text_excerpt: "A comment URL must never remain a lead post.",
+}], new Date("2026-10-07T12:00:00.000Z"))[0];
+assert.equal(mislabeledCommentPost.source_type, "comment");
+assert.equal(mislabeledCommentPost.content_url, scanCommentUrl);
+assert.equal(mislabeledCommentPost.comment_url, scanCommentUrl);
 
 const contaminatedMergedRow = mergeResults.normalizeRows([{
   group_name: "Test Group",

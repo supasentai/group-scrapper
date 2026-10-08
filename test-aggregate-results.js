@@ -60,6 +60,19 @@ try {
     published_at_text: "time unavailable",
     text_excerpt: "A captured row whose timestamp needs manual review.",
   };
+  const unresolvedComment = require("./merge-results.js").normalizeRows([{
+    group_name: "Alpha Group",
+    group_url: "https://www.facebook.com/groups/alpha/",
+    content_url: "https://www.facebook.com/groups/alpha/posts/99/",
+    name: "Comment Author",
+    source_type: "comment",
+    published_at_text: "2026-10-07T09:05:00.000Z",
+    text_excerpt: "A comment without a unique permalink.",
+  }], new Date("2026-10-07T12:00:00.000Z"))[0];
+  assert.equal(unresolvedComment.source_type, "unresolved");
+  assert.equal(unresolvedComment.comment_url, "");
+  assert.equal(unresolvedComment.content_url, "");
+  assert.match(unresolvedComment.data_quality_flags, /source_type_unresolved/);
   writeRun("run-alpha", "Alpha Group", "https://www.facebook.com/groups/alpha/", "completed", [alphaRow, { ...alphaRow }, unresolvedAlphaRow]);
   writeRun("run-zero", "Zero Group", "https://www.facebook.com/groups/zero/", "zero_result", []);
   writeRun("run-stopped", "Stopped Group", "https://www.facebook.com/groups/stopped/", "stopped", [{

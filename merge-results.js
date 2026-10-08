@@ -110,12 +110,26 @@ function normalizeRows(rows, now) {
     const rawContentUrl = String(row.content_url || "").trim();
     const rawPostUrl = String(row.post_url || "").trim();
     const postUrl = pilot.canonicalPostUrl(rawPostUrl || rawContentUrl) || rawPostUrl || rawContentUrl;
-    const contentUrl = pilot.canonicalContentUrl(rawContentUrl)
-      || pilot.canonicalContentUrl(row.comment_url || "")
-      || rawContentUrl
-      || postUrl;
-    const commentUrl = pilot.canonicalContentUrl(row.comment_url || "")
-      || (contentUrl && contentUrl !== postUrl ? contentUrl : "");
+    const rawSourceType = String(row.source_type || "").trim().toLowerCase();
+    const commentCandidates = [row.comment_url, rawContentUrl]
+      .map((value) => pilot.canonicalContentUrl(value || ""))
+      .filter((value) => value && value !== postUrl);
+    const explicitCommentUrl = commentCandidates[0] || "";
+    const urlHasCommentIdentity = /(?:[?&](?:comment_id|reply_comment_id)=)/i.test(
+      `${row.comment_url || ""} ${rawContentUrl}`,
+    );
+    const hasCommentIdentity = Boolean(explicitCommentUrl && urlHasCommentIdentity);
+    const urlSourceType = /reply_comment_id=/i.test(explicitCommentUrl)
+      ? "reply"
+      : /comment_id=/i.test(explicitCommentUrl)
+        ? "comment"
+        : "";
+    const contentUrl = rawSourceType === "unresolved"
+      ? ""
+      : rawSourceType === "post"
+        ? (hasCommentIdentity ? explicitCommentUrl : postUrl)
+        : (hasCommentIdentity ? explicitCommentUrl : (rawContentUrl && rawContentUrl !== postUrl ? rawContentUrl : ""));
+    const commentUrl = hasCommentIdentity ? explicitCommentUrl : "";
     return {
       ...row,
       _index: index,
@@ -142,27 +156,46 @@ function normalizeRows(rows, now) {
     if (!byPost.has(key)) byPost.set(key, { rootSeen: false, identities: new Set() });
     const state = byPost.get(key);
     const identity = `${row.profile_url || `name:${row.name || "unknown"}`}|${pilot.textFingerprint(row.text_excerpt)}`;
-    const explicitType = /^(?:comment|reply)$/i.test(row._rawSourceType);
+    const rawSourceType = String(row._rawSourceType || "").trim().toLowerCase();
+    const urlHasCommentIdentity = /(?:[?&](?:comment_id|reply_comment_id)=)/i.test(
+      `${row.comment_url || ""} ${row.content_url || ""}`,
+    );
+    const urlSourceType = /reply_comment_id=/i.test(row.content_url || row.comment_url || "")
+      ? "reply"
+      : /comment_id=/i.test(row.content_url || row.comment_url || "")
+        ? "comment"
+        : "";
+    const explicitType = /^(?:post|comment|reply|unresolved)$/i.test(row._rawSourceType);
     const explicitPermalink = /(?:comment_id|reply_comment_id)=/i.test(`${row.comment_url || ""} ${row.content_url || ""}`)
-      || row.content_url !== row.post_url;
+      || (row.comment_url && row.comment_url !== row.post_url)
+      || (row.content_url && row.content_url !== row.post_url && row._rawSourceType !== "unresolved");
     row._sourceTypeInferred = false;
-    if (explicitType) row.source_type = row._rawSourceType.toLowerCase();
+    if (rawSourceType === "post" && urlHasCommentIdentity) {
+      row.source_type = urlSourceType || "unresolved";
+      row._sourceTypeInferred = true;
+    } else if (explicitType) {
+      row.source_type = row._rawSourceType.toLowerCase();
+      if (row.source_type === "post") state.rootSeen = true;
+    }
     else if (/reply_comment_id=/i.test(row.content_url)) row.source_type = "reply";
-    else if (/comment_id=/i.test(row.content_url) || row.content_url !== row.post_url) row.source_type = "comment";
+    else if (/comment_id=/i.test(row.content_url) || (row.content_url && row.content_url !== row.post_url)) row.source_type = "comment";
     else if (!state.rootSeen) {
       row.source_type = "post";
       state.rootSeen = true;
     } else if (!state.identities.has(identity)) {
-      row.source_type = "comment";
+      row.source_type = "unresolved";
       row._sourceTypeInferred = true;
     } else {
       row.source_type = "post";
     }
     if (explicitPermalink) row._sourceTypeInferred = false;
     state.identities.add(identity);
-    if (row.source_type !== "post" && !row.comment_url) {
-      row.comment_url = row.post_url;
-      row.content_url = row.post_url;
+    if (["comment", "reply"].includes(row.source_type) && !row.comment_url) {
+      row.source_type = "unresolved";
+    }
+    if (row.source_type === "unresolved") {
+      row.comment_url = "";
+      row.content_url = "";
     }
   }
 
@@ -197,15 +230,16 @@ function normalizeRows(rows, now) {
     if (VERIFIED_ACCOUNT_PATTERN.test(row._raw_text)) addFlag("ui_chrome_removed");
     if (!row.name) addFlag("missing_author_name");
     if (!row.profile_url && row.is_anonymous !== "yes") addFlag("missing_profile_url");
-    if (row.source_type !== "post" && row.comment_url === row.post_url) addFlag("comment_permalink_missing");
-    if (row._sourceTypeInferred && row.source_type !== "post") addFlag("source_type_inferred");
+    if (["comment", "reply", "unresolved"].includes(row.source_type) && !row.comment_url) addFlag("comment_permalink_missing");
+    if (row.source_type === "unresolved") addFlag("source_type_unresolved");
+    if (row._sourceTypeInferred && row.source_type === "unresolved") addFlag("source_type_inferred");
     if (!row._date) addFlag("missing_or_unparsed_time");
     if (/(?:Thích|Trả lời|Chia sẻ|Like|React|Reply|Share)(?=\s*(?:\d+|Thích|Trả lời|Chia sẻ|Like|React|Reply|Share|$))/.test(row._raw_text)) addFlag("ui_chrome_removed");
     if (/…\s*(?:Xem thêm|See more)/i.test(row._raw_text)) addFlag("text_truncated");
     return {
       group_name: row.group_name,
       group_url: row.group_url,
-      content_url: row.content_url || row.post_url,
+      content_url: row.content_url || (row.source_type === "post" ? row.post_url : ""),
       content_assessment: contentAssessment,
       published_at: row.published_at,
       procedure: analysis.procedures,
@@ -254,13 +288,15 @@ function qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, rowCount) {
   if (qualityFlagCounts.ui_chrome_contamination) qualityFlags.push("ui_chrome_contamination_detected");
   if (qualityFlagCounts.text_truncated) qualityFlags.push("source_text_truncated_detected");
   if (qualityFlagCounts.source_type_inferred) qualityFlags.push("source_type_inferred");
+  if (qualityFlagCounts.source_type_unresolved) qualityFlags.push("source_type_unresolved");
   if (qualityFlagCounts.comment_permalink_missing) qualityFlags.push("comment_permalink_missing");
   return qualityFlags;
 }
 
 function classificationOutputs(all) {
   const leads = all.filter((row) =>
-    ["potential_customer", "experienced_customer"].includes(row.segment)
+    row.source_type === "post"
+      && ["potential_customer", "experienced_customer"].includes(row.segment)
       && Number(row.intent_score) >= 45
       && Number(row.seeding_risk) <= 59
   );
@@ -292,8 +328,14 @@ function main() {
   const stamp = now.toISOString().slice(0, 10).replaceAll("-", "");
   const outputs = {
     all: path.join(dir, `fb_group_${days}d_repaired_all_${stamp}_utf8.csv`),
+    posts: path.join(dir, `fb_group_${days}d_posts_${stamp}_utf8.csv`),
+    comments: path.join(dir, `fb_group_${days}d_comments_context_${stamp}_utf8.csv`),
+    unresolved: path.join(dir, `fb_group_${days}d_unresolved_context_${stamp}_utf8.csv`),
   };
   writeCsv(outputs.all, all);
+  writeCsv(outputs.posts, all.filter((row) => row.source_type === "post"));
+  writeCsv(outputs.comments, all.filter((row) => ["comment", "reply"].includes(row.source_type)));
+  writeCsv(outputs.unresolved, all.filter((row) => row.source_type === "unresolved"));
   if (classified) {
     outputs.classified = path.join(dir, `fb_group_${days}d_classified_${stamp}_utf8.csv`);
     outputs.leads = path.join(dir, `fb_group_${days}d_repaired_leads_${stamp}_utf8.csv`);
