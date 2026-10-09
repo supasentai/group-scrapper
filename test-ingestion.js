@@ -32,6 +32,9 @@ assert.deepEqual(Object.keys(manifest), [
   "row_count",
   "status",
   "output_file",
+  "stop_reason",
+  "records_seen",
+  "boundary_verified",
 ]);
 assert.equal(manifest.started_at, "2026-10-07T12:00:00.000Z");
 assert.equal(manifest.completed_at, "2026-10-07T12:00:01.000Z");
