@@ -76,7 +76,7 @@ function usage() {
     "  --profile-dir <path>       Dedicated Edge profile directory for instructions",
     "  --download-timeout-ms <n>  Download wait timeout",
     "  --child-timeout-ms <n>     Ingestion/merge subprocess timeout",
-    "  --post-root-timeout-ms <n> Post-root backfill budget (default 120000)",
+    "  --post-root-timeout-ms <n> Post-root backfill budget per post (default 120000)",
   ].join("\n");
 }
 
@@ -220,8 +220,38 @@ function postRootUrlFromRow(row) {
   return pilot.canonicalPostUrl(row?.content_url || row?.post_url || "");
 }
 
+function hasCommentIdentity(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.searchParams.has("comment_id") || url.searchParams.has("reply_comment_id");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function postRootNavigationUrlFromRow(row, expectedPostUrl = postRootUrlFromRow(row)) {
+  const expected = pilot.canonicalPostUrl(expectedPostUrl);
+  if (!expected) return "";
+  const candidates = [row?.content_url, row?.comment_url, row?.post_url]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return candidates.find((value) => (
+    hasCommentIdentity(value) && pilot.canonicalPostUrl(value) === expected
+  )) || expected;
+}
+
+function uniquePostRootSources(rows) {
+  const sources = new Map();
+  for (const row of rows || []) {
+    const postUrl = postRootUrlFromRow(row);
+    if (!postUrl || sources.has(postUrl)) continue;
+    sources.set(postUrl, postRootNavigationUrlFromRow(row, postUrl));
+  }
+  return [...sources.entries()].map(([postUrl, navigationUrl]) => ({ postUrl, navigationUrl }));
+}
+
 function uniquePostRootUrls(rows) {
-  return [...new Set((rows || []).map(postRootUrlFromRow).filter(Boolean))];
+  return uniquePostRootSources(rows).map(({ postUrl }) => postUrl);
 }
 
 function remainingBackfillTimeoutMs(startedAt, timeoutMs, now = Date.now()) {
@@ -318,7 +348,11 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
         && /\/groups\/[^/]+\/posts\/\d+\/?$/i.test(url.pathname)
         && !hasCommentIdentity(href));
     };
-    const storyMessages = [...document.querySelectorAll('[data-ad-rendering-role="story_message"]')];
+    const storyMessages = [...new Set([
+      ...document.querySelectorAll('[data-ad-rendering-role="story_message"]'),
+      ...document.querySelectorAll('[role="dialog"] [role="article"], [role="dialog"] article'),
+      ...document.querySelectorAll('[role="main"] [role="article"]'),
+    ])];
     const storySelector = '[data-ad-rendering-role="story_message"]';
     const titleHints = String(document.title || "")
       .split("|")
@@ -401,6 +435,18 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
         return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
       })
       .find(Boolean) || "";
+    const nameFor = (scope, authorLink) => {
+      const linkedName = normalize(authorLink?.innerText || authorLink?.textContent || authorLink?.getAttribute("aria-label"));
+      if (linkedName) return linkedName;
+      const lines = textLines(scope);
+      const anonymousHeader = lines.find((line) => /^(?:bài viết của|post by)\s+/i.test(line));
+      if (anonymousHeader) {
+        return normalize(anonymousHeader.replace(/^(?:bài viết của|post by)\s+/i, ""));
+      }
+      return normalize(scope.querySelector(
+        '[data-ad-rendering-role="story_actor_name"], [data-ad-rendering-role="actor_name"], h2, h3, [role="heading"]',
+      )?.innerText || "");
+    };
     const scopeFor = (message) => {
       const scopes = [];
       let node = message;
@@ -410,16 +456,24 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
         const matchingPostLinks = expectedPath
           ? postLinks.filter((link) => normalizedPath(hrefOf(link)) === expectedPath)
           : postLinks;
-        if (!matchingPostLinks.length) continue;
+        const matchingCommentLinks = expectedPath
+          ? links.filter((link) => hasCommentIdentity(hrefOf(link))
+            && normalizedPath(hrefOf(link)) === expectedPath)
+          : [];
+        const matchingLinks = matchingPostLinks.length ? matchingPostLinks : matchingCommentLinks;
+        if (!matchingLinks.length) continue;
         // A page can retain a previous story while the requested post is
         // hydrating. An outer feed container may then expose links for both
         // stories; reject that container so stale text cannot be paired with
         // the requested post URL.
         const storyCount = (node.matches?.(storySelector) ? 1 : 0) + node.querySelectorAll(storySelector).length;
         if (storyCount > 1) continue;
-        const postLink = matchingPostLinks[0];
+        // Comment permalinks can expose only the comment URL inside the modal.
+        // The expected canonical URL is safe once that comment proves the
+        // requested post path.
+        const postLink = matchingPostLinks[0] || { href: expectedUrl };
         const authorLink = authorLinkFor(links);
-        const timeText = timeFor(node, matchingPostLinks);
+        const timeText = timeFor(node, matchingLinks);
         const publishedAt = publishedAtFor(node);
         const virtualized = node.getAttribute("data-virtualized") === "false";
         // Prefer the smallest ancestor that has enough root evidence, while
@@ -443,11 +497,14 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
       }
       const scope = scopeFor(message);
       if (!scope) return null;
-      const messageNode = message.querySelector('[data-ad-preview="message"]') || message;
+      const messageNode = message.querySelector('[data-ad-preview="message"]')
+        || scope.node.querySelector('[data-ad-preview="message"]')
+        || scope.node.querySelector('[data-ad-rendering-role="story_message"]')
+        || message;
       const rawMessage = normalize(messageNode.innerText || messageNode.textContent);
       return {
         post_url: hrefOf(scope.postLink),
-        name: normalize(scope.authorLink?.innerText || scope.authorLink?.textContent || scope.authorLink?.getAttribute("aria-label")),
+        name: nameFor(scope.node, scope.authorLink),
         profile_url: hrefOf(scope.authorLink),
         published_at: scope.publishedAt,
         published_at_text: scope.timeText,
@@ -461,13 +518,13 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
     // a usable post title, wait for a matching story instead of pairing stale
     // content with the requested URL. Pages without a title hint retain the
     // structural fallback behavior.
-    if (titleHints.length) return titleMatched;
+    if (titleHints.length && titleMatched.length) return titleMatched;
     return candidates;
   }, expectedPostUrl);
 }
 
 async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "", timeoutMs = DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS }) {
-  const rootUrls = uniquePostRootUrls(rows);
+  const rootSources = uniquePostRootSources(rows);
   const existingPostUrls = new Set((rows || [])
     .filter((row) => String(row?.source_type || "").toLowerCase() === "post")
     .map(postRootUrlFromRow)
@@ -481,16 +538,15 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
     failed_urls: [],
     quality_flags: [],
   };
-  const pendingUrls = rootUrls.filter((url) => {
-    if (existingPostUrls.has(url)) {
+  const pendingSources = rootSources.filter(({ postUrl }) => {
+    if (existingPostUrls.has(postUrl)) {
       stats.deduplicated += 1;
       return false;
     }
     return true;
   });
-  if (!pendingUrls.length) return { rows: [...(rows || [])], stats };
+  if (!pendingSources.length) return { rows: [...(rows || [])], stats };
 
-  const startedAt = Date.now();
   let backfillPage = null;
   const closeBackfillPage = async () => {
     if (!backfillPage) return;
@@ -498,12 +554,16 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
     backfillPage = null;
   };
   try {
-    for (const postUrl of pendingUrls) {
+    for (const { postUrl, navigationUrl } of pendingSources) {
       stats.attempted += 1;
-      const remaining = remainingBackfillTimeoutMs(startedAt, timeoutMs);
+      // The CLI option is a per-post budget. A group with many comments must
+      // not consume one shared clock and turn all later posts into synthetic
+      // timeout failures.
+      const postStartedAt = Date.now();
+      const remaining = remainingBackfillTimeoutMs(postStartedAt, timeoutMs);
       if (remaining <= 0) {
         stats.failed += 1;
-        stats.failed_urls.push({ post_url: postUrl, reason: "post_root_backfill_timeout" });
+        stats.failed_urls.push({ post_url: postUrl, navigation_url: navigationUrl, reason: "post_root_backfill_timeout" });
         continue;
       }
       let backfilledRoot = null;
@@ -516,17 +576,17 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
           // previous DOM, while candidate extraction still validates the
           // requested permalink and title before accepting a root.
           if (!backfillPage) backfillPage = await context.newPage();
-          const gotoTimeout = Math.min(20_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+          const gotoTimeout = Math.min(20_000, remainingBackfillTimeoutMs(postStartedAt, timeoutMs));
           if (gotoTimeout <= 0) {
             lastError = "post_root_backfill_timeout";
             break;
           }
-          await backfillPage.goto(postUrl, {
+          await backfillPage.goto(navigationUrl, {
             waitUntil: "domcontentloaded",
             timeout: gotoTimeout,
           });
           if (typeof backfillPage.waitForLoadState === "function") {
-            const loadTimeout = Math.min(5_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+            const loadTimeout = Math.min(5_000, remainingBackfillTimeoutMs(postStartedAt, timeoutMs));
             if (loadTimeout <= 0) {
               lastError = "post_root_backfill_timeout";
               break;
@@ -536,7 +596,7 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
             }).catch(() => {});
           }
           let rawCandidates = [];
-          const readBudget = Math.min(20_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+          const readBudget = Math.min(20_000, remainingBackfillTimeoutMs(postStartedAt, timeoutMs));
           if (readBudget <= 0) {
             lastError = "post_root_backfill_timeout";
             break;
@@ -549,7 +609,7 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
               return false;
             }
           }, readBudget, 350);
-          if (!foundCandidates && remainingBackfillTimeoutMs(startedAt, timeoutMs) <= 0) {
+          if (!foundCandidates && remainingBackfillTimeoutMs(postStartedAt, timeoutMs) <= 0) {
             lastError = "post_root_backfill_timeout";
             break;
           }
@@ -560,7 +620,7 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
         } catch (error) {
           lastError = classifyBackfillError(
             error,
-            remainingBackfillTimeoutMs(startedAt, timeoutMs),
+            remainingBackfillTimeoutMs(postStartedAt, timeoutMs),
           );
           // A failed navigation can leave the page in a broken state. Close
           // only on error so the next retry gets a clean tab; normal
@@ -570,7 +630,7 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
       }
       if (!backfilledRoot) {
         stats.failed += 1;
-        stats.failed_urls.push({ post_url: postUrl, reason: lastError });
+        stats.failed_urls.push({ post_url: postUrl, navigation_url: navigationUrl, reason: lastError });
         continue;
       }
       candidates.push(backfilledRoot);
@@ -1076,6 +1136,7 @@ module.exports = {
   classifyBackfillError,
   remainingBackfillTimeoutMs,
   normalizeBackfilledPostRoot,
+  postRootNavigationUrlFromRow,
   postRootUrlFromRow,
   readPostRootCandidates,
   runBrowser,

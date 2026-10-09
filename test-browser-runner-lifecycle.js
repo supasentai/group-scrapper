@@ -289,7 +289,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(backfill.rows.at(-1).comment_url, "");
   assert.equal(backfill.stats.attempted, 1);
   assert.equal(backfill.stats.succeeded, 1);
-  assert.deepEqual(visitedPostUrls, ["https://www.facebook.com/groups/example/posts/456/"]);
+  assert.deepEqual(visitedPostUrls, ["https://www.facebook.com/groups/example/posts/456/?comment_id=789"]);
   assert.equal(backfillPageClosed, 1);
 
   let delayedEvaluateCalls = 0;

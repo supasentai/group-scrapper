@@ -20,7 +20,7 @@ function usage() {
     "  --input <path>             Filtered aggregate CSV to retry (required)",
     "  --results-dir <path>       Output parent (default: input CSV directory)",
     "  --cdp-endpoint <url>       Logged-in Edge CDP endpoint (default http://127.0.0.1:9222)",
-    "  --post-root-timeout-ms <n> Timeout budget per group (default 120000)",
+    "  --post-root-timeout-ms <n> Timeout budget per post root (default 120000)",
     "  --help                     Show this help",
   ].join("\n");
 }
