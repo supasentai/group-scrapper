@@ -40,6 +40,12 @@
     // boundary. Additional rounds only add latency and increase CDP timeout
     // risk without expanding the requested time window.
     maxOldPostRounds: 1,
+    // A feed that keeps changing but yields no usable boundary evidence must
+    // not consume the full runtime watchdog. These are deliberately small
+    // safety guards; the normal stop condition remains the checkpoint/date
+    // boundary above.
+    maxNoRecordRounds: 3,
+    maxUnresolvedTimestampRounds: 3,
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
@@ -384,6 +390,29 @@
       if (published === null || Number.isNaN(published)) return true;
       return published >= threshold;
     });
+  }
+
+  function boundaryStopReason({
+    recordCount = 0,
+    parsedTimestampCount = 0,
+    noRecordRounds = 0,
+    unresolvedTimestampRounds = 0,
+    config = CONFIG,
+  } = {}) {
+    const maxNoRecordRounds = Number(config.maxNoRecordRounds || 0);
+    const maxUnresolvedTimestampRounds = Number(config.maxUnresolvedTimestampRounds || 0);
+    if (maxNoRecordRounds > 0
+      && recordCount === 0
+      && noRecordRounds >= maxNoRecordRounds) {
+      return "no_records_boundary_unverified";
+    }
+    if (maxUnresolvedTimestampRounds > 0
+      && recordCount > 0
+      && parsedTimestampCount === 0
+      && unresolvedTimestampRounds >= maxUnresolvedTimestampRounds) {
+      return "timestamps_unresolved_boundary_unverified";
+    }
+    return "";
   }
 
   function normalizeProfileUrl(rawUrl) {
@@ -1084,6 +1113,9 @@
     rowCount,
     status,
     outputFile,
+    stopReason = "",
+    recordsSeen = 0,
+    boundaryVerified = false,
   }) {
     return {
       group_url: groupUrl || "",
@@ -1094,6 +1126,9 @@
       row_count: Number(rowCount),
       status,
       output_file: outputFile,
+      stop_reason: stopReason || null,
+      records_seen: Number(recordsSeen),
+      boundary_verified: Boolean(boundaryVerified),
     };
   }
 
@@ -1226,6 +1261,8 @@
     let lastHeight = 0;
     let idleRounds = 0;
     let oldPostRounds = 0;
+    let noRecordRounds = 0;
+    let unresolvedTimestampRounds = 0;
     let round = 0;
 
     globalThis.STOP_FB_LEAD_PILOT = () => {
@@ -1254,7 +1291,29 @@
         .filter((date) => date && !Number.isNaN(date.getTime()));
       const oldest = recordDates.length ? new Date(Math.min(...recordDates.map(Number))) : null;
       oldPostRounds = oldest && oldest < cutoff ? oldPostRounds + 1 : 0;
+      if (records.size === 0) {
+        noRecordRounds += 1;
+        unresolvedTimestampRounds = 0;
+      } else if (recordDates.length === 0) {
+        unresolvedTimestampRounds += 1;
+        noRecordRounds = 0;
+      } else {
+        noRecordRounds = 0;
+        unresolvedTimestampRounds = 0;
+      }
+      const earlyStopReason = boundaryStopReason({
+        recordCount: records.size,
+        parsedTimestampCount: recordDates.length,
+        noRecordRounds,
+        unresolvedTimestampRounds,
+      });
+      if (earlyStopReason) {
+        state.stopped = true;
+        state.stopReason = earlyStopReason;
+      }
       hud.update(`Vòng ${round} · bài cũ nhất: ${oldest ? oldest.toLocaleDateString() : "chưa xác định"}`, capturedRows);
+
+      if (state.stopped) break;
 
       const before = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
       window.scrollTo({ top: before, behavior: "smooth" });
@@ -1319,6 +1378,9 @@
       rowCount: capturedRows.length,
       status: manifestStatus,
       outputFile: scanFilename,
+      stopReason: state.stopReason,
+      recordsSeen: records.size,
+      boundaryVerified: oldPostRounds >= CONFIG.maxOldPostRounds,
     });
     hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
 
@@ -1348,6 +1410,10 @@
         checkpoint: result.checkpoint ? new Date(result.checkpoint).toISOString() : null,
         checkpoint_saved: checkpointSaved,
         run_status: runStatus,
+        stop_reason: state.stopReason || null,
+        boundary_verified: oldPostRounds >= CONFIG.maxOldPostRounds,
+        no_record_rounds: noRecordRounds,
+        unresolved_timestamp_rounds: unresolvedTimestampRounds,
         run_id: runId,
         records_seen: records.size,
         captured_count: capturedRows.length,
@@ -1382,6 +1448,7 @@
     isLikelyAnonymousAlias,
     getGroupContext,
     filterRecordsSince,
+    boundaryStopReason,
     publishedTimestamp,
     inferAuthorFromText,
     inferSourceType,

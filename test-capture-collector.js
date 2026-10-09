@@ -10,6 +10,39 @@ assert.doesNotMatch(collectorSource, /text\.length\s*<\s*12/);
 
 assert.equal(pilot.CONFIG.captureMode, "all");
 assert.equal(pilot.CONFIG.deferClassification, true);
+assert.equal(
+  pilot.boundaryStopReason({
+    recordCount: 0,
+    parsedTimestampCount: 0,
+    noRecordRounds: pilot.CONFIG.maxNoRecordRounds,
+  }),
+  "no_records_boundary_unverified",
+);
+assert.equal(
+  pilot.boundaryStopReason({
+    recordCount: 2,
+    parsedTimestampCount: 0,
+    unresolvedTimestampRounds: pilot.CONFIG.maxUnresolvedTimestampRounds,
+  }),
+  "timestamps_unresolved_boundary_unverified",
+);
+assert.equal(
+  pilot.boundaryStopReason({
+    recordCount: 2,
+    parsedTimestampCount: 1,
+    unresolvedTimestampRounds: pilot.CONFIG.maxUnresolvedTimestampRounds,
+  }),
+  "",
+);
+assert.equal(
+  pilot.boundaryStopReason({
+    recordCount: 0,
+    parsedTimestampCount: 0,
+    noRecordRounds: 99,
+    config: { maxNoRecordRounds: 0, maxUnresolvedTimestampRounds: 0 },
+  }),
+  "",
+);
 assert.deepEqual(
   pilot.extractCommentPermalinkFromValue("https://www.facebook.com/groups/capture/posts/1/?comment_id=123", "https://www.facebook.com/groups/capture/posts/1/"),
   { url: "https://www.facebook.com/groups/capture/posts/1/?comment_id=123", sourceType: "comment" },
