@@ -874,8 +874,29 @@
   }
 
   function getTopLevelArticles() {
-    return [...document.querySelectorAll('div[role="article"]')]
+    const loadedArticles = [...document.querySelectorAll('div[role="article"]')]
+      .filter((article) => !article.querySelector('[aria-label="Đang tải..."], [data-visualcompletion="loading-state"]'))
       .filter((article) => !article.parentElement?.closest('div[role="article"]'));
+    if (loadedArticles.length) return loadedArticles;
+
+    // Some Facebook feed variants expose the story body but omit the
+    // role="article" wrapper. Keep the smallest useful card ancestor so the
+    // normal author/time/text extraction can still operate on it.
+    const containers = [];
+    for (const message of document.querySelectorAll('[data-ad-rendering-role="story_message"]')) {
+      let fallback = null;
+      let node = message.parentElement;
+      for (let depth = 0; node && depth <= 10; depth += 1, node = node.parentElement) {
+        const links = node.querySelectorAll('a[href]').length;
+        if (links >= 2 && !fallback) fallback = node;
+        if (node.querySelector('[data-ad-rendering-role="profile_name"], [data-ad-rendering-role="actor_name"]')) {
+          fallback = node;
+          break;
+        }
+      }
+      if (fallback && !containers.includes(fallback)) containers.push(fallback);
+    }
+    return containers;
   }
 
   function inferSourceType(isRootArticle, contentLinkType, articleDepth) {

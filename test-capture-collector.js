@@ -12,6 +12,7 @@ assert.equal(pilot.CONFIG.captureMode, "all");
 assert.equal(pilot.CONFIG.deferClassification, true);
 assert.equal(pilot.CONFIG.feedHydrationGraceMs, 12_000);
 assert.equal(pilot.CONFIG.feedHydrationPollMs, 350);
+assert.match(collectorSource, /data-ad-rendering-role="story_message"/);
 assert.equal(
   pilot.boundaryStopReason({
     recordCount: 0,
