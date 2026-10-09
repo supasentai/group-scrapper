@@ -465,7 +465,14 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
   if (!pendingUrls.length) return { rows: [...(rows || [])], stats };
 
   const startedAt = Date.now();
-  for (const postUrl of pendingUrls) {
+  let backfillPage = null;
+  const closeBackfillPage = async () => {
+    if (!backfillPage) return;
+    await backfillPage.close?.().catch(() => {});
+    backfillPage = null;
+  };
+  try {
+    for (const postUrl of pendingUrls) {
       stats.attempted += 1;
       const remaining = remainingBackfillTimeoutMs(startedAt, timeoutMs);
       if (remaining <= 0) {
@@ -478,12 +485,11 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
       // A fresh retry handles a transient Facebook hydration race without
       // allowing an unverified candidate to become a synthetic post.
       for (let attempt = 0; attempt < 2 && !backfilledRoot; attempt += 1) {
-        let backfillPage = null;
         try {
-          // Use a fresh sequential tab for each attempt. Reusing a Facebook
-          // page can leave the previous story in the DOM while the new URL and
-          // permalink have already changed, which risks stale text/URL pairs.
-          backfillPage = await context.newPage();
+          // Reuse one sequential tab for the group. Navigation replaces the
+          // previous DOM, while candidate extraction still validates the
+          // requested permalink and title before accepting a root.
+          if (!backfillPage) backfillPage = await context.newPage();
           const gotoTimeout = Math.min(20_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
           if (gotoTimeout <= 0) {
             lastError = "post_root_backfill_timeout";
@@ -530,8 +536,10 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
             error,
             remainingBackfillTimeoutMs(startedAt, timeoutMs),
           );
-        } finally {
-          if (backfillPage?.close) await backfillPage.close().catch(() => {});
+          // A failed navigation can leave the page in a broken state. Close
+          // only on error so the next retry gets a clean tab; normal
+          // no-candidate results keep using the group tab.
+          await closeBackfillPage();
         }
       }
       if (!backfilledRoot) {
@@ -542,6 +550,11 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
       candidates.push(backfilledRoot);
       existingPostUrls.add(postUrl);
       stats.succeeded += 1;
+    }
+  } finally {
+    // The group owns exactly one reusable tab and releases it before the next
+    // group starts, preventing tab/RAM growth during a batch.
+    await closeBackfillPage();
   }
   if (stats.failed > 0) stats.quality_flags.push("post_root_backfill_failed");
   const uniqueCandidates = deduplicateBackfilledPostRoots(candidates);
