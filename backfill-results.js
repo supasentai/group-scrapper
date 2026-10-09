@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const browserRunner = require("./browser-runner.js");
@@ -93,6 +94,19 @@ function assertSafeOutputParent(resultsDir) {
 
 function timestampFor(value = new Date()) {
   return value.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function snapshotInputFile(inputPath, outputDir, stamp = timestampFor(), fileSystem = fs) {
+  const absoluteInput = path.resolve(inputPath);
+  if (!fileSystem.existsSync(absoluteInput) || !fileSystem.statSync(absoluteInput).isFile()) return null;
+  const inputBuffer = fileSystem.readFileSync(absoluteInput);
+  const snapshotPath = path.join(outputDir, `backfill_input_${stamp}.csv`);
+  fileSystem.copyFileSync(absoluteInput, snapshotPath);
+  return {
+    path: snapshotPath,
+    sha256: crypto.createHash("sha256").update(inputBuffer).digest("hex"),
+    bytes: inputBuffer.length,
+  };
 }
 
 function createRetryOutputDir(resultsDir, inputPath, now = new Date(), fileSystem = fs) {
@@ -253,6 +267,8 @@ async function runBackfill(config, dependencies = {}) {
   const outputDir = dependencies.outputDir || createRetryOutputDir(config.resultsDir, inputPath);
   if (path.resolve(outputDir) === inputPath) throw new Error("Retry output must not overwrite input CSV");
   fs.mkdirSync(outputDir, { recursive: true });
+  const runStamp = timestampFor();
+  const inputSnapshot = snapshotInputFile(inputPath, outputDir, runStamp);
 
   const retryRows = [];
   const failureRows = [];
@@ -292,7 +308,7 @@ async function runBackfill(config, dependencies = {}) {
     await (dependencies.disconnectBrowser || browserRunner.disconnectConnectedBrowser)(browser);
   }
 
-  const stamp = timestampFor();
+  const stamp = runStamp;
   const outputCsv = path.join(outputDir, `post_root_backfill_retry_${stamp}.csv`);
   const failureCsv = path.join(outputDir, `post_root_backfill_failures_${stamp}.csv`);
   const outputManifest = path.join(outputDir, `post_root_backfill_retry_${stamp}.manifest.json`);
@@ -303,6 +319,10 @@ async function runBackfill(config, dependencies = {}) {
     type: "post_root_backfill_retry",
     created_at: new Date().toISOString(),
     input_csv: inputPath,
+    input_snapshot_csv: inputSnapshot?.path || null,
+    input_sha256: inputSnapshot?.sha256 || null,
+    input_bytes: inputSnapshot?.bytes ?? null,
+    input_row_count: rows.length,
     output_csv: outputCsv,
     failure_csv: failureCsv,
     selected_rows: selection.selected.length,
@@ -316,6 +336,10 @@ async function runBackfill(config, dependencies = {}) {
     checkpoints_updated: false,
     source_csv_overwritten: false,
     raw_archive_touched: false,
+    config: {
+      cdp_endpoint: config.cdpEndpoint,
+      post_root_timeout_ms: config.postRootTimeoutMs,
+    },
   };
   fs.writeFileSync(outputManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return {
@@ -353,6 +377,7 @@ module.exports = {
   parseArgs,
   selectRetryRows,
   shouldRetryRow,
+  snapshotInputFile,
   timestampFor,
   writeFailureCsv,
   runBackfill,

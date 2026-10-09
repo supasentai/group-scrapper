@@ -49,6 +49,13 @@ const failureCsvRows = require("./merge-results.js").parseCsv(fs.readFileSync(fa
 assert.equal(failureCsvRows.length, 2);
 assert.equal(failureCsvRows[0].backfill_status, "failed");
 assert.equal(failureCsvRows[0].backfill_post_url, root);
+const snapshotInput = path.join(outputParent, "input.csv");
+fs.writeFileSync(snapshotInput, "group_url,content_url\nhttps://example.test,https://example.test/post\n", "utf8");
+const snapshot = backfill.snapshotInputFile(snapshotInput, outputParent, "20261009T010203Z");
+assert.equal(path.basename(snapshot.path), "backfill_input_20261009T010203Z.csv");
+assert.equal(snapshot.bytes, fs.statSync(snapshotInput).size);
+assert.equal(fs.readFileSync(snapshot.path, "utf8"), fs.readFileSync(snapshotInput, "utf8"));
+assert.match(snapshot.sha256, /^[a-f0-9]{64}$/);
 const outputDir = backfill.createRetryOutputDir(outputParent, input, new Date("2026-10-09T01:02:03.000Z"));
 assert.equal(path.basename(outputDir), "backfill_retry_20261009T010203Z");
 fs.rmSync(outputParent, { recursive: true, force: true });
