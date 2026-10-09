@@ -17,6 +17,7 @@ function makePage(lastRun = null) {
     goto: async (url) => { gotoUrls.push(url); },
     on: () => {},
     off: () => { offCount += 1; },
+    exposeFunction: async () => {},
     evaluate: async (...args) => {
       if (args.length === 1) return { error: null, lastRun };
       injectedCheckpoints = args[1]?.checkpoints || null;

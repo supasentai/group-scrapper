@@ -17,6 +17,7 @@ assert.equal(
 assert.throws(() => runner.validateGroupUrl("https://www.facebook.com/groups/example/posts/123/"), /group root/);
 assert.throws(() => runner.validateGroupUrl("https://example.com/groups/example/"), /facebook\.com/);
 assert.equal(runner.validateCdpEndpoint("http://127.0.0.1:9222/"), "http://127.0.0.1:9222");
+assert.equal(typeof runner.resolvePostPermalinkWithTrustedClick, "function");
 
 const config = runner.parseArgs([
   "--group-url", "https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL",

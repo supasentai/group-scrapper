@@ -848,6 +848,16 @@
       .filter((link) => isExactGroupLink(link.href, groupUrl))
       .filter((link) => Boolean(getTimeLinkLabel(link)));
 
+    const trustedResolver = globalThis.__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__;
+    if (typeof trustedResolver === "function" && candidates[0]) {
+      const resolved = await trustedResolver({
+        groupUrl,
+        href: candidates[0].href,
+        label: getTimeLinkLabel(candidates[0]),
+      });
+      if (resolved) return resolved;
+    }
+
     for (const link of candidates.slice(0, 2)) {
       const beforeUrl = location.href;
       try {
@@ -976,19 +986,30 @@
   async function collectRenderedRecords(interactionState = {}) {
     const records = [];
     const currentGroupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
-    for (const rootArticle of getTopLevelArticles()) {
-      const rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
-      const postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
-      const fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
+    const rootArticles = getTopLevelArticles();
+    for (const [rootIndex, initialRootArticle] of rootArticles.entries()) {
+      let rootArticle = initialRootArticle;
+      let rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
+      let postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
+      let fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
       let postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
+      let recoveredPostUrl = "";
       const attemptedContainers = interactionState.permalinkInteractionAttempts
         || (interactionState.permalinkInteractionAttempts = new WeakSet());
       if (!postUrl && !attemptedContainers.has(rootArticle)) {
         attemptedContainers.add(rootArticle);
-        postUrl = await resolvePostUrlByInteraction(rootArticle, currentGroupUrl);
+        recoveredPostUrl = await resolvePostUrlByInteraction(rootArticle, currentGroupUrl);
+        postUrl = recoveredPostUrl;
+        // A trusted CDP click may restore the feed and replace the original
+        // card node. Re-read that card before extracting author/time/text.
+        rootArticle = getTopLevelArticles()[rootIndex] || rootArticle;
+        rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
+        postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
+        fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
+        postUrl = canonicalPostUrl((postLink || fallbackLink)?.href) || recoveredPostUrl;
       }
       if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
-      const rootHasOwnPostLink = Boolean(postLink);
+      const rootHasOwnPostLink = Boolean(postLink || recoveredPostUrl);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];

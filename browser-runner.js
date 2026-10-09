@@ -887,6 +887,70 @@ async function detectUserAction(page) {
   return null;
 }
 
+async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, label } = {}) {
+  const beforeUrl = page.url();
+  const targetHref = String(href || "");
+  const targetLabel = String(label || "");
+  if (!targetHref || !groupUrl) return "";
+
+  const anchorIndex = await page.evaluate(({ targetHref: expectedHref, targetLabel: expectedLabel }) => {
+    const normalize = (value) => String(value || "")
+      .replace(/[\p{Cf}\u034f]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return [...document.querySelectorAll("a[href]")].findIndex((anchor) => {
+      if (anchor.href !== expectedHref) return false;
+      const labels = [anchor.innerText, anchor.textContent, anchor.getAttribute("aria-label")]
+        .map(normalize)
+        .filter(Boolean);
+      return !expectedLabel || labels.includes(normalize(expectedLabel));
+    });
+  }, { targetHref, targetLabel });
+  if (anchorIndex < 0) return "";
+
+  const readResolvedPostUrl = async () => {
+    const routeUrl = pilot.canonicalPostUrl(page.url());
+    if (routeUrl && pilot.isPostInGroup(routeUrl, groupUrl)) return routeUrl;
+    const dialogUrl = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog) return "";
+      return [...dialog.querySelectorAll("a[href]")]
+        .map((anchor) => anchor.href)
+        .find((value) => /\/groups\/[^/]+\/posts\/\d+\/?(?:[?#]|$)/i.test(value)) || "";
+    });
+    const canonicalDialogUrl = pilot.canonicalPostUrl(dialogUrl);
+    return canonicalDialogUrl && pilot.isPostInGroup(canonicalDialogUrl, groupUrl)
+      ? canonicalDialogUrl
+      : "";
+  };
+
+  let resolved = "";
+  try {
+    await page.locator("a[href]").nth(anchorIndex).click({ force: true, timeout: 5_000 });
+    await waitFor(async () => {
+      resolved = await readResolvedPostUrl();
+      return Boolean(resolved);
+    }, 8_000, 250);
+  } finally {
+    if (page.url() !== beforeUrl) {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: 10_000 }).catch(() => {});
+      const restored = await waitFor(
+        () => pilot.canonicalGroupUrl(page.url()) === pilot.canonicalGroupUrl(groupUrl)
+          && !pilot.canonicalPostUrl(page.url()),
+        8_000,
+        250,
+      );
+      if (!restored) {
+        await page.goto(buildGroupNavigationUrl(groupUrl), {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        }).catch(() => {});
+      }
+    }
+  }
+  return resolved;
+}
+
 function withTimeout(promise, timeoutMs, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -960,6 +1024,10 @@ async function runBrowser(config, dependencies = {}) {
       }
     };
     page.on("download", downloadHandler);
+    await page.exposeFunction(
+      "__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__",
+      (payload) => resolvePostPermalinkWithTrustedClick(page, payload),
+    );
 
     await page.evaluate(({ source, options, checkpoints }) => {
       globalThis.__FB_GROUP_CHECKPOINTS__ = checkpoints;
@@ -1133,6 +1201,7 @@ module.exports = {
   normalizePublishedTimeText,
   normalizePublishedAt,
   parseArgs,
+  resolvePostPermalinkWithTrustedClick,
   classifyBackfillError,
   remainingBackfillTimeoutMs,
   normalizeBackfilledPostRoot,
