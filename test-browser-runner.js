@@ -96,6 +96,8 @@ assert.throws(() => runner.safeDownloadName("..\\escape.csv"), /Unsafe/);
 const commentUrl = "https://www.facebook.com/groups/example/posts/456/?comment_id=789";
 const canonicalPostUrl = "https://www.facebook.com/groups/example/posts/456/";
 assert.equal(runner.postRootUrlFromRow({ content_url: commentUrl }), canonicalPostUrl);
+assert.equal(runner.postRootNavigationUrlFromRow({ content_url: commentUrl }), commentUrl);
+assert.equal(runner.postRootNavigationUrlFromRow({ post_url: canonicalPostUrl }), canonicalPostUrl);
 assert.equal(runner.normalizePublishedTimeText("7\u034f giờ"), "7 giờ");
 assert.equal(runner.normalizePublishedAt("2026-10-09T01:02:03Z"), "2026-10-09T01:02:03.000Z");
 assert.equal(runner.normalizePublishedAt("18 giờ"), "");
