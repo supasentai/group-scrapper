@@ -1011,7 +1011,8 @@
         fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
         postUrl = canonicalPostUrl((postLink || fallbackLink)?.href) || recoveredPostUrl;
       }
-      if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
+      const trustedRecoveredPost = Boolean(recoveredPostUrl && postUrl === recoveredPostUrl);
+      if (!postUrl || (!isPostInGroup(postUrl, currentGroupUrl) && !trustedRecoveredPost)) continue;
       const rootHasOwnPostLink = Boolean(postLink || recoveredPostUrl);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];

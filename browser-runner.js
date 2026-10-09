@@ -892,6 +892,10 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
   const targetHref = String(href || "");
   const targetLabel = String(label || "");
   if (!targetHref || !groupUrl) return "";
+  const isGroupPostRoute = (value) => {
+    const url = pilot.canonicalPostUrl(value);
+    return Boolean(url && /\/groups\/[^/]+\/posts\/\d+\/$/i.test(url));
+  };
 
   const anchorIndex = await page.evaluate(({ targetHref: expectedHref, targetLabel: expectedLabel }) => {
     const normalize = (value) => String(value || "")
@@ -910,7 +914,10 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
 
   const readResolvedPostUrl = async () => {
     const routeUrl = pilot.canonicalPostUrl(page.url());
-    if (routeUrl && pilot.isPostInGroup(routeUrl, groupUrl)) return routeUrl;
+    // Facebook may replace a numeric group id with its vanity slug after the
+    // click. The clicked anchor was already restricted to the target group;
+    // validate the resulting route shape without comparing id and slug.
+    if (isGroupPostRoute(routeUrl)) return routeUrl;
     const dialogUrl = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
       if (!dialog) return "";
@@ -919,7 +926,7 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
         .find((value) => /\/groups\/[^/]+\/posts\/\d+\/?(?:[?#]|$)/i.test(value)) || "";
     });
     const canonicalDialogUrl = pilot.canonicalPostUrl(dialogUrl);
-    return canonicalDialogUrl && pilot.isPostInGroup(canonicalDialogUrl, groupUrl)
+    return canonicalDialogUrl && isGroupPostRoute(canonicalDialogUrl)
       ? canonicalDialogUrl
       : "";
   };
