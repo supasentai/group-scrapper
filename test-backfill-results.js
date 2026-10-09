@@ -32,7 +32,23 @@ assert.equal(selected.skippedExistingRoots, 1);
 assert.equal(backfill.shouldRetryRow(rows[2]), true);
 assert.equal(backfill.shouldRetryRow({ source_type: "post", content_url: root, post_url: root }), false);
 
+const failureRows = backfill.buildFailureRows(rows, [{
+  post_url: root,
+  reason: "post_root_not_found",
+}]);
+assert.equal(failureRows.length, 2, "all source rows for a failed post root are preserved");
+assert.equal(failureRows[0].backfill_status, "failed");
+assert.equal(failureRows[0].backfill_error, "post_root_not_found");
+assert.equal(failureRows[0].backfill_post_url, root);
+assert.match(failureRows[0].data_quality_flags, /post_root_backfill_failed/);
+
 const outputParent = fs.mkdtempSync(path.join(os.tmpdir(), "backfill-output-parent-"));
+const failureCsv = path.join(outputParent, "failures.csv");
+backfill.writeFailureCsv(failureCsv, rows, failureRows);
+const failureCsvRows = require("./merge-results.js").parseCsv(fs.readFileSync(failureCsv, "utf8"));
+assert.equal(failureCsvRows.length, 2);
+assert.equal(failureCsvRows[0].backfill_status, "failed");
+assert.equal(failureCsvRows[0].backfill_post_url, root);
 const outputDir = backfill.createRetryOutputDir(outputParent, input, new Date("2026-10-09T01:02:03.000Z"));
 assert.equal(path.basename(outputDir), "backfill_retry_20261009T010203Z");
 fs.rmSync(outputParent, { recursive: true, force: true });

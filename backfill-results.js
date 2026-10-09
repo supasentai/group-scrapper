@@ -9,6 +9,7 @@ const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_TIMEOUT_MS = browserRunner.DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS || 120_000;
 const COMMENT_ID_PATTERN = /[?&](?:comment_id|reply_comment_id)=/i;
 const BACKFILL_FLAG_PATTERN = /(?:post[_ -]?root|comment[_ -]?fallback|fallback)/i;
+const FAILURE_METADATA_HEADERS = ["backfill_status", "backfill_error", "backfill_post_url"];
 
 function usage() {
   return [
@@ -191,6 +192,42 @@ function addStats(target, source, groupUrl) {
   }
 }
 
+function buildFailureRows(rows, failedUrls) {
+  const failuresByRoot = new Map((failedUrls || [])
+    .map((entry) => [rootUrlForRow({ content_url: entry.post_url }), entry])
+    .filter(([rootUrl]) => rootUrl));
+  return (rows || [])
+    .map((row) => {
+      const rootUrl = rootUrlForRow(row);
+      const failure = failuresByRoot.get(rootUrl);
+      if (!failure) return null;
+      const flags = String(row.data_quality_flags || "")
+        .split(/[;|]/)
+        .map((flag) => flag.trim())
+        .filter(Boolean);
+      if (!flags.includes("post_root_backfill_failed")) flags.push("post_root_backfill_failed");
+      return {
+        ...row,
+        data_quality_flags: flags.join(";"),
+        backfill_status: "failed",
+        backfill_error: String(failure.reason || "post_root_backfill_failed"),
+        backfill_post_url: rootUrl,
+      };
+    })
+    .filter(Boolean);
+}
+
+function writeFailureCsv(filePath, sourceRows, failureRows) {
+  const sourceHeaders = Object.keys(sourceRows?.[0] || {});
+  const headers = [...new Set([...sourceHeaders, ...FAILURE_METADATA_HEADERS])];
+  const csvEscape = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const body = [
+    headers.map(csvEscape).join(","),
+    ...(failureRows || []).map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
+  ].join("\r\n");
+  fs.writeFileSync(filePath, `\uFEFF${body}\r\n`, "utf8");
+}
+
 function loadInputRows(inputPath) {
   const absolute = path.resolve(inputPath);
   if (!fs.existsSync(absolute)) throw new Error(`Input CSV not found: ${absolute}`);
@@ -218,6 +255,7 @@ async function runBackfill(config, dependencies = {}) {
   fs.mkdirSync(outputDir, { recursive: true });
 
   const retryRows = [];
+  const failureRows = [];
   const stats = emptyStats();
   const groupReports = [];
   const backfill = dependencies.backfillPostRoots || browserRunner.backfillPostRoots;
@@ -240,6 +278,7 @@ async function runBackfill(config, dependencies = {}) {
         });
         const recovered = result.rows.slice(groupRowsForRetry.length);
         retryRows.push(...recovered);
+        failureRows.push(...buildFailureRows(groupRowsForRetry, result.stats.failed_urls));
         addStats(stats, result.stats, groupUrl === "__missing_group_url__" ? "" : groupUrl);
         groupReports.push({
           group_url: groupUrl === "__missing_group_url__" ? "" : groupUrl,
@@ -255,18 +294,22 @@ async function runBackfill(config, dependencies = {}) {
 
   const stamp = timestampFor();
   const outputCsv = path.join(outputDir, `post_root_backfill_retry_${stamp}.csv`);
+  const failureCsv = path.join(outputDir, `post_root_backfill_failures_${stamp}.csv`);
   const outputManifest = path.join(outputDir, `post_root_backfill_retry_${stamp}.manifest.json`);
   mergeResults.writeCsv(outputCsv, retryRows);
+  writeFailureCsv(failureCsv, rows, failureRows);
   const manifest = {
     version: 1,
     type: "post_root_backfill_retry",
     created_at: new Date().toISOString(),
     input_csv: inputPath,
     output_csv: outputCsv,
+    failure_csv: failureCsv,
     selected_rows: selection.selected.length,
     unique_post_roots: new Set(selection.selected.map(rootUrlForRow).filter(Boolean)).size,
     skipped_rows_with_existing_post_root: selection.skippedExistingRoots,
     recovered_rows: retryRows.length,
+    failed_rows_preserved: failureRows.length,
     stats,
     groups: groupReports,
     collector_ran: false,
@@ -275,7 +318,11 @@ async function runBackfill(config, dependencies = {}) {
     raw_archive_touched: false,
   };
   fs.writeFileSync(outputManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  return { status: stats.failed ? "completed_with_failures" : "completed", files: { csv: outputCsv, manifest: outputManifest }, manifest };
+  return {
+    status: stats.failed ? "completed_with_failures" : "completed",
+    files: { csv: outputCsv, failureCsv, manifest: outputManifest },
+    manifest,
+  };
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -299,6 +346,7 @@ if (require.main === module) main().then((code) => { process.exitCode = code; })
 module.exports = {
   addStats,
   assertSafeOutputParent,
+  buildFailureRows,
   createRetryOutputDir,
   hasBackfillQualityFlag,
   hasCommentIdentity,
@@ -306,5 +354,6 @@ module.exports = {
   selectRetryRows,
   shouldRetryRow,
   timestampFor,
+  writeFailureCsv,
   runBackfill,
 };
