@@ -849,13 +849,16 @@
       .filter((link) => Boolean(getTimeLinkLabel(link)));
 
     const trustedResolver = globalThis.__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__;
-    if (typeof trustedResolver === "function" && candidates[0]) {
-      const resolved = await trustedResolver({
-        groupUrl,
-        href: candidates[0].href,
-        label: getTimeLinkLabel(candidates[0]),
-      });
-      if (resolved) return resolved;
+    if (typeof trustedResolver === "function") {
+      for (const candidate of candidates.slice(0, 2)) {
+        const resolved = await trustedResolver({
+          groupUrl,
+          href: candidate.href,
+          label: getTimeLinkLabel(candidate),
+        });
+        if (resolved) return resolved;
+      }
+      return "";
     }
 
     for (const link of candidates.slice(0, 2)) {
