@@ -97,6 +97,8 @@ const commentUrl = "https://www.facebook.com/groups/example/posts/456/?comment_i
 const canonicalPostUrl = "https://www.facebook.com/groups/example/posts/456/";
 assert.equal(runner.postRootUrlFromRow({ content_url: commentUrl }), canonicalPostUrl);
 assert.equal(runner.normalizePublishedTimeText("7\u034f giờ"), "7 giờ");
+assert.equal(runner.normalizePublishedAt("2026-10-09T01:02:03Z"), "2026-10-09T01:02:03.000Z");
+assert.equal(runner.normalizePublishedAt("18 giờ"), "");
 assert.equal(runner.extractPublishedTimeText("ResilientLlama7062 · 7 giờ"), "7 giờ");
 assert.equal(runner.isPublishedTimeText("7 giờ"), true);
 assert.equal(runner.isPublishedTimeText("2.5 months"), false);
@@ -113,6 +115,15 @@ const normalizedTimestampCandidate = runner.normalizeBackfilledPostRoot({
 }, canonicalPostUrl);
 assert.equal(normalizedTimestampCandidate.source_type, "post");
 assert.match(normalizedTimestampCandidate.text_excerpt, /2\.5 months/);
+const normalizedAbsoluteCandidate = runner.normalizeBackfilledPostRoot({
+  post_url: canonicalPostUrl,
+  name: "Root Author",
+  published_at: "2026-10-09T01:02:03Z",
+  published_at_text: "",
+  text_excerpt: "Has anyone had this procedure?",
+}, canonicalPostUrl);
+assert.equal(normalizedAbsoluteCandidate.published_at, "2026-10-09T01:02:03.000Z");
+assert.equal(normalizedAbsoluteCandidate.data_quality_flags, "");
 assert.deepEqual(runner.deduplicateBackfilledPostRoots([
   { content_url: `${canonicalPostUrl}?ref=share`, source_type: "post", text_excerpt: "Root question" },
   { content_url: canonicalPostUrl, source_type: "post", text_excerpt: "Duplicate root" },
@@ -140,8 +151,10 @@ assert.deepEqual(runner.normalizeBackfilledPostRoot({
   name: "Root Author",
   profile_url: "",
   source_type: "post",
+  published_at: "",
   published_at_text: "Hôm qua lúc 03:17",
   text_excerpt: "Has anyone had this procedure?",
+  data_quality_flags: "time_unresolved",
 });
 assert.equal(runner.normalizeBackfilledPostRoot({
   post_url: "https://www.facebook.com/groups/example/posts/999/",

@@ -52,6 +52,12 @@ function extractPublishedTimeText(value, { allowEmbedded = true } = {}) {
   return embedded ? embedded[0].trim() : "";
 }
 
+function normalizePublishedAt(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
 function usage() {
   return [
     "Usage:",
@@ -243,7 +249,8 @@ function normalizeBackfilledPostRoot(candidate, expectedPostUrl, context = {}) {
   );
   if (!text) return null;
   const name = String(candidate.name || "").trim();
-  const publishedAtText = String(candidate.published_at_text || candidate.published_at || "").trim();
+  const publishedAt = normalizePublishedAt(candidate.published_at);
+  const publishedAtText = String(candidate.published_at_text || publishedAt || "").trim();
   // A root is accepted only when the page exposed all identifying fields we
   // need to distinguish it from a comment-shaped DOM node. Missing author or
   // time stays in the original comment context instead of becoming a partial
@@ -258,8 +265,10 @@ function normalizeBackfilledPostRoot(candidate, expectedPostUrl, context = {}) {
     name,
     profile_url: String(candidate.profile_url || "").trim(),
     source_type: "post",
+    published_at: publishedAt,
     published_at_text: publishedAtText,
     text_excerpt: text,
+    data_quality_flags: publishedAt ? "" : "time_unresolved",
   };
 }
 
@@ -385,6 +394,13 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
       if (fromPostLink) return fromPostLink;
       return lineValues.map((value) => extractTime(value, { allowEmbedded: false })).find(Boolean) || "";
     };
+    const publishedAtFor = (scope) => [...scope.querySelectorAll("time[datetime], [datetime]")]
+      .map((node) => node.getAttribute("datetime"))
+      .map((value) => {
+        const parsed = new Date(value || "");
+        return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+      })
+      .find(Boolean) || "";
     const scopeFor = (message) => {
       const scopes = [];
       let node = message;
@@ -404,11 +420,12 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
         const postLink = matchingPostLinks[0];
         const authorLink = authorLinkFor(links);
         const timeText = timeFor(node, matchingPostLinks);
+        const publishedAt = publishedAtFor(node);
         const virtualized = node.getAttribute("data-virtualized") === "false";
         // Prefer the smallest ancestor that has enough root evidence, while
         // retaining the known virtualized card as a strong fallback.
         const score = (authorLink ? 5 : 0) + (timeText ? 4 : 0) + (virtualized ? 3 : 0) - (depth * 0.05);
-        scopes.push({ node, depth, postLink, authorLink, timeText, score });
+        scopes.push({ node, depth, postLink, authorLink, timeText, publishedAt, score });
       }
       return scopes.sort((left, right) => right.score - left.score || left.depth - right.depth)[0] || null;
     };
@@ -432,6 +449,7 @@ async function readPostRootCandidates(page, expectedPostUrl = "") {
         post_url: hrefOf(scope.postLink),
         name: normalize(scope.authorLink?.innerText || scope.authorLink?.textContent || scope.authorLink?.getAttribute("aria-label")),
         profile_url: hrefOf(scope.authorLink),
+        published_at: scope.publishedAt,
         published_at_text: scope.timeText,
         text_excerpt: rawMessage,
         title_match: titleMatchesText(rawMessage),
@@ -1053,6 +1071,7 @@ module.exports = {
   makeMergeCommand,
   manifestFilenameFor,
   normalizePublishedTimeText,
+  normalizePublishedAt,
   parseArgs,
   classifyBackfillError,
   remainingBackfillTimeoutMs,
