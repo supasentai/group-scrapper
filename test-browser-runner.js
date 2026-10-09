@@ -118,6 +118,8 @@ assert.deepEqual(runner.deduplicateBackfilledPostRoots([
   { content_url: canonicalPostUrl, source_type: "post", text_excerpt: "Duplicate root" },
 ]), [{
   content_url: canonicalPostUrl,
+  post_url: canonicalPostUrl,
+  comment_url: "",
   source_type: "post",
   text_excerpt: "Root question",
 }]);
@@ -133,6 +135,8 @@ assert.deepEqual(runner.normalizeBackfilledPostRoot({
   group_name: "Example Group",
   group_url: "https://www.facebook.com/groups/example/",
   content_url: canonicalPostUrl,
+  post_url: canonicalPostUrl,
+  comment_url: "",
   name: "Root Author",
   profile_url: "",
   source_type: "post",

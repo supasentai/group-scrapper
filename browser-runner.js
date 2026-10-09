@@ -253,6 +253,8 @@ function normalizeBackfilledPostRoot(candidate, expectedPostUrl, context = {}) {
     group_name: context.groupName || candidate.group_name || "",
     group_url: context.groupUrl || candidate.group_url || "",
     content_url: postUrl,
+    post_url: postUrl,
+    comment_url: "",
     name,
     profile_url: String(candidate.profile_url || "").trim(),
     source_type: "post",
@@ -268,7 +270,13 @@ function deduplicateBackfilledPostRoots(rows) {
     const postUrl = pilot.canonicalPostUrl(row?.content_url || row?.post_url || "");
     if (!postUrl || seen.has(postUrl)) continue;
     seen.add(postUrl);
-    deduped.push({ ...row, content_url: postUrl, source_type: "post" });
+    deduped.push({
+      ...row,
+      content_url: postUrl,
+      post_url: postUrl,
+      comment_url: "",
+      source_type: "post",
+    });
   }
   return deduped;
 }

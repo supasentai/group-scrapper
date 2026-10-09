@@ -285,6 +285,8 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(backfill.rows.length, 3);
   assert.equal(backfill.rows.at(-1).source_type, "post");
   assert.equal(backfill.rows.at(-1).content_url, "https://www.facebook.com/groups/example/posts/456/");
+  assert.equal(backfill.rows.at(-1).post_url, "https://www.facebook.com/groups/example/posts/456/");
+  assert.equal(backfill.rows.at(-1).comment_url, "");
   assert.equal(backfill.stats.attempted, 1);
   assert.equal(backfill.stats.succeeded, 1);
   assert.deepEqual(visitedPostUrls, ["https://www.facebook.com/groups/example/posts/456/"]);
