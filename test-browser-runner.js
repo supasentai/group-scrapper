@@ -101,6 +101,10 @@ assert.equal(runner.extractPublishedTimeText("ResilientLlama7062 · 7 giờ"), "
 assert.equal(runner.isPublishedTimeText("7 giờ"), true);
 assert.equal(runner.isPublishedTimeText("2.5 months"), false);
 assert.equal(runner.extractPublishedTimeText("I had this result for 2.5 months"), "");
+assert.equal(runner.remainingBackfillTimeoutMs(1000, 5000, 4500), 1500);
+assert.equal(runner.remainingBackfillTimeoutMs(1000, 5000, 7000), 0);
+assert.equal(runner.classifyBackfillError(new Error("Timeout 20000ms exceeded"), 500), "navigation_timeout");
+assert.equal(runner.classifyBackfillError(new Error("Timeout 20000ms exceeded"), 0), "post_root_backfill_timeout");
 const normalizedTimestampCandidate = runner.normalizeBackfilledPostRoot({
   post_url: canonicalPostUrl,
   name: "Patricia Duran Nobrega",

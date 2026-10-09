@@ -218,6 +218,17 @@ function uniquePostRootUrls(rows) {
   return [...new Set((rows || []).map(postRootUrlFromRow).filter(Boolean))];
 }
 
+function remainingBackfillTimeoutMs(startedAt, timeoutMs, now = Date.now()) {
+  return Math.max(0, Number(timeoutMs || 0) - (now - startedAt));
+}
+
+function classifyBackfillError(error, remainingMs = 1) {
+  if (Number(remainingMs) <= 0) return "post_root_backfill_timeout";
+  const message = String(error?.message || error || "").trim();
+  if (/timeout|timed out|time\s*out/i.test(message)) return "navigation_timeout";
+  return message.slice(0, 240) || "post_root_not_found";
+}
+
 function normalizeBackfilledPostRoot(candidate, expectedPostUrl, context = {}) {
   if (!candidate || typeof candidate !== "object") return null;
   const expected = pilot.canonicalPostUrl(expectedPostUrl);
@@ -456,7 +467,7 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
   const startedAt = Date.now();
   for (const postUrl of pendingUrls) {
       stats.attempted += 1;
-      const remaining = Number(timeoutMs) - (Date.now() - startedAt);
+      const remaining = remainingBackfillTimeoutMs(startedAt, timeoutMs);
       if (remaining <= 0) {
         stats.failed += 1;
         stats.failed_urls.push({ post_url: postUrl, reason: "post_root_backfill_timeout" });
@@ -473,18 +484,32 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
           // page can leave the previous story in the DOM while the new URL and
           // permalink have already changed, which risks stale text/URL pairs.
           backfillPage = await context.newPage();
+          const gotoTimeout = Math.min(20_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+          if (gotoTimeout <= 0) {
+            lastError = "post_root_backfill_timeout";
+            break;
+          }
           await backfillPage.goto(postUrl, {
             waitUntil: "domcontentloaded",
-            timeout: Math.min(20_000, Number(timeoutMs) - (Date.now() - startedAt)),
+            timeout: gotoTimeout,
           });
           if (typeof backfillPage.waitForLoadState === "function") {
+            const loadTimeout = Math.min(5_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+            if (loadTimeout <= 0) {
+              lastError = "post_root_backfill_timeout";
+              break;
+            }
             await backfillPage.waitForLoadState("load", {
-              timeout: Math.min(5_000, Number(timeoutMs) - (Date.now() - startedAt)),
+              timeout: loadTimeout,
             }).catch(() => {});
           }
           let rawCandidates = [];
-          const readBudget = Math.max(1_000, Math.min(20_000, Number(timeoutMs) - (Date.now() - startedAt)));
-          await waitFor(async () => {
+          const readBudget = Math.min(20_000, remainingBackfillTimeoutMs(startedAt, timeoutMs));
+          if (readBudget <= 0) {
+            lastError = "post_root_backfill_timeout";
+            break;
+          }
+          const foundCandidates = await waitFor(async () => {
             try {
               rawCandidates = await readPostRootCandidates(backfillPage, postUrl);
               return rawCandidates.length > 0;
@@ -492,12 +517,19 @@ async function backfillPostRoots({ context, rows, groupName = "", groupUrl = "",
               return false;
             }
           }, readBudget, 350);
+          if (!foundCandidates && remainingBackfillTimeoutMs(startedAt, timeoutMs) <= 0) {
+            lastError = "post_root_backfill_timeout";
+            break;
+          }
           const root = deduplicateBackfilledPostRoots(rawCandidates
             .map((candidate) => normalizeBackfilledPostRoot(candidate, postUrl, { groupName, groupUrl })));
           if (root.length && root[0].content_url === postUrl) backfilledRoot = root[0];
           else lastError = "post_root_not_found";
         } catch (error) {
-          lastError = String(error.message || error).slice(0, 240);
+          lastError = classifyBackfillError(
+            error,
+            remainingBackfillTimeoutMs(startedAt, timeoutMs),
+          );
         } finally {
           if (backfillPage?.close) await backfillPage.close().catch(() => {});
         }
@@ -1001,6 +1033,8 @@ module.exports = {
   manifestFilenameFor,
   normalizePublishedTimeText,
   parseArgs,
+  classifyBackfillError,
+  remainingBackfillTimeoutMs,
   normalizeBackfilledPostRoot,
   postRootUrlFromRow,
   readPostRootCandidates,
