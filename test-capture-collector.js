@@ -12,7 +12,12 @@ assert.equal(pilot.CONFIG.captureMode, "all");
 assert.equal(pilot.CONFIG.deferClassification, true);
 assert.equal(pilot.CONFIG.feedHydrationGraceMs, 12_000);
 assert.equal(pilot.CONFIG.feedHydrationPollMs, 350);
+assert.equal(pilot.CONFIG.postPermalinkInteractionWaitMs, 1_500);
+assert.equal(pilot.CONFIG.postPermalinkRestoreWaitMs, 700);
 assert.match(collectorSource, /data-ad-rendering-role="story_message"/);
+assert.match(collectorSource, /async function resolvePostUrlByInteraction/);
+assert.match(collectorSource, /history\.back\(\)/);
+assert.match(collectorSource, /\\p\{Cf\}\\u034f/);
 assert.equal(
   pilot.boundaryStopReason({
     recordCount: 0,

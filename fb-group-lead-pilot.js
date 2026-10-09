@@ -51,6 +51,11 @@
     // verified zero-result boundary.
     feedHydrationGraceMs: 12_000,
     feedHydrationPollMs: 350,
+    // A story card without a direct /posts/ link can expose its permalink only
+    // after the visible timestamp is clicked. Keep this interaction bounded so
+    // one malformed card cannot stall the scan.
+    postPermalinkInteractionWaitMs: 1_500,
+    postPermalinkRestoreWaitMs: 700,
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
@@ -200,7 +205,10 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const normalizeSpace = (value) => String(value || "")
+    .replace(/[\p{Cf}\u034f]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   function isLikelyUiGroupHeading(value) {
     return UI_GROUP_HEADINGS.has(normalizeSpace(value).toLowerCase());
@@ -806,6 +814,63 @@
     };
   }
 
+  function getTimeLinkLabel(link) {
+    const labels = [
+      link?.innerText,
+      link?.textContent,
+      link?.getAttribute?.("aria-label"),
+      link?.getAttribute?.("title"),
+      link?.getAttribute?.("data-tooltip-content"),
+    ].map(normalizeSpace).filter(Boolean);
+    return labels.find((value) => {
+      TIME_TEXT_PATTERN.lastIndex = 0;
+      return TIME_TEXT_PATTERN.test(value) || Boolean(parseFacebookTime(value));
+    }) || "";
+  }
+
+  function getVisiblePostUrlFromDocument(groupUrl) {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (dialog) {
+      const dialogPostUrl = [...dialog.querySelectorAll("a[href]")]
+        .map((candidate) => canonicalPostUrl(candidate.href))
+        .find((url) => url && isPostInGroup(url, groupUrl));
+      if (dialogPostUrl) return dialogPostUrl;
+    }
+    const routeUrl = canonicalPostUrl(typeof location !== "undefined" ? location.href : "");
+    return routeUrl && isPostInGroup(routeUrl, groupUrl) ? routeUrl : "";
+  }
+
+  async function resolvePostUrlByInteraction(article, groupUrl) {
+    if (typeof document === "undefined" || typeof location === "undefined") return "";
+    const candidates = [...article.querySelectorAll("a[href]")]
+      .filter((link) => isVisibleNode(link))
+      .filter((link) => !canonicalPostUrl(link.href))
+      .filter((link) => isExactGroupLink(link.href, groupUrl))
+      .filter((link) => Boolean(getTimeLinkLabel(link)));
+
+    for (const link of candidates.slice(0, 2)) {
+      const beforeUrl = location.href;
+      try {
+        link.click();
+        await sleep(Number(CONFIG.postPermalinkInteractionWaitMs || 1_500));
+        const resolved = getVisiblePostUrlFromDocument(groupUrl);
+        if (resolved) return resolved;
+      } catch (_error) {
+        // Facebook may replace the link/card synchronously during navigation.
+      } finally {
+        if (location.href !== beforeUrl) {
+          try {
+            history.back();
+            await sleep(Number(CONFIG.postPermalinkRestoreWaitMs || 700));
+          } catch (_error) {
+            // Leave the current Facebook route untouched if history restoration fails.
+          }
+        }
+      }
+    }
+    return "";
+  }
+
   function findContentLink(article, postUrl, isRootArticle = false) {
     const own = getOwnArticleClone(article);
     const candidates = [...own.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')]
@@ -908,14 +973,20 @@
     return "unresolved";
   }
 
-  function collectRenderedRecords() {
+  async function collectRenderedRecords(interactionState = {}) {
     const records = [];
     const currentGroupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
     for (const rootArticle of getTopLevelArticles()) {
       const rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
       const postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
       const fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
-      const postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
+      let postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
+      const attemptedContainers = interactionState.permalinkInteractionAttempts
+        || (interactionState.permalinkInteractionAttempts = new WeakSet());
+      if (!postUrl && !attemptedContainers.has(rootArticle)) {
+        attemptedContainers.add(rootArticle);
+        postUrl = await resolvePostUrlByInteraction(rootArticle, currentGroupUrl);
+      }
       if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
       const rootHasOwnPostLink = Boolean(postLink);
 
@@ -1314,6 +1385,7 @@
     const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
+    const interactionState = { permalinkInteractionAttempts: new WeakSet() };
     const groupContext = getGroupContext(options.groupName);
     const groupUrl = groupContext.groupUrl || canonicalGroupUrl(location.href);
     const scanStartedAt = new Date();
@@ -1340,7 +1412,7 @@
       && (!CONFIG.maxRuntimeMs || Date.now() - scanStartedAt.getTime() < CONFIG.maxRuntimeMs)) {
       round += 1;
       await expandVisibleDiscussion();
-      for (const record of collectRenderedRecords()) records.set(record.key, record);
+      for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
 
       const allRecords = [...records.values()];
       const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff, scanStartedAt), groupContext);
@@ -1395,7 +1467,7 @@
       state.stopReason = "hard_limit";
     }
 
-    for (const record of collectRenderedRecords()) records.set(record.key, record);
+    for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
     const filteredRecords = filterRecordsSince([...records.values()], cutoff, scanStartedAt);
     const capturedRows = captureRecords(filteredRecords, groupContext);
     const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
