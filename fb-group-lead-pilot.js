@@ -46,6 +46,11 @@
     // boundary above.
     maxNoRecordRounds: 3,
     maxUnresolvedTimestampRounds: 3,
+    // Facebook can render loading skeletons for several seconds after the
+    // group route is ready. Do not interpret that hydration window as a
+    // verified zero-result boundary.
+    feedHydrationGraceMs: 12_000,
+    feedHydrationPollMs: 350,
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
@@ -1237,6 +1242,41 @@
     return buttons.length;
   }
 
+  function isVisibleNode(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && rect.width > 0
+      && rect.height > 0;
+  }
+
+  function feedHydrationSnapshot() {
+    const loadingNodes = [...document.querySelectorAll(
+      '[aria-label="Đang tải..."], [aria-label="Loading…"], [aria-label="Loading..."], [role="progressbar"], [data-visualcompletion="loading-state"]',
+    )];
+    return {
+      loading: loadingNodes.some(isVisibleNode),
+      storyMessages: document.querySelectorAll('[data-ad-rendering-role="story_message"]').length,
+      topLevelArticles: getTopLevelArticles().length,
+    };
+  }
+
+  async function waitForFeedHydration() {
+    const graceMs = Number(CONFIG.feedHydrationGraceMs || 0);
+    const pollMs = Math.max(50, Number(CONFIG.feedHydrationPollMs || 350));
+    const startedAt = Date.now();
+    let snapshot = feedHydrationSnapshot();
+    while (Date.now() - startedAt < graceMs) {
+      if (!snapshot.loading && (snapshot.storyMessages > 0 || snapshot.topLevelArticles > 0)) break;
+      if (!snapshot.loading && document.readyState === "complete") break;
+      await sleep(pollMs);
+      snapshot = feedHydrationSnapshot();
+    }
+    return { ...snapshot, waitedMs: Date.now() - startedAt };
+  }
+
   async function run(options = {}) {
     if (typeof document === "undefined") throw new Error("Chỉ chạy script này trên trang Facebook trong trình duyệt.");
     Object.assign(CONFIG, options);
@@ -1269,6 +1309,8 @@
       state.stopped = true;
       state.stopReason = "manual";
     };
+
+    await waitForFeedHydration();
 
     while (!state.stopped
       && idleRounds < CONFIG.maxIdleRounds
