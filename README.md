@@ -106,6 +106,26 @@ Ingestion chỉ nhận cặp `fb_group_scan_*.csv` + manifest tương ứng, ki�
 
 Runner dùng Edge CDP với profile riêng, không nhập mật khẩu, OTP hoặc CAPTCHA. Nếu Playwright chưa có, runner báo dependency thiếu và không tự cài.
 
+### CDP preflight bắt buộc
+
+Trước mỗi lượt chạy, mở các phiên Edge CDP bằng profile riêng. Không dùng chung `user-data-dir` giữa các cổng:
+
+```powershell
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9222"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9223 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9223"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9224 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9224"
+```
+
+Đăng nhập thủ công vào profile tương ứng, rồi kiểm tra từng cổng:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:9222/json/version
+Invoke-RestMethod http://127.0.0.1:9223/json/version
+Invoke-RestMethod http://127.0.0.1:9224/json/version
+```
+
+Chỉ bắt đầu batch khi cổng được chọn trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Batch không tự chia group qua cả ba cổng; mỗi lần chạy dùng một cổng duy nhất qua `--cdp-endpoint`, mặc định là 9222. Nếu đổi profile hoặc cổng, phải xác nhận profile đó đã đăng nhập Facebook trước khi chạy.
+
 Chuẩn bị profile một lần:
 
 ```powershell

@@ -51,6 +51,10 @@
     // verified zero-result boundary.
     feedHydrationGraceMs: 12_000,
     feedHydrationPollMs: 350,
+    // A scroll can trigger a second Facebook hydration cycle. Do not sample
+    // the feed while its next card is still a loading skeleton.
+    postScrollHydrationTimeoutMs: 12_000,
+    postScrollHydrationPollMs: 350,
     // A story card without a direct /posts/ link can expose its permalink only
     // after the visible timestamp is clicked. Keep this interaction bounded so
     // one malformed card cannot stall the scan.
@@ -1394,6 +1398,55 @@
     return { ...snapshot, waitedMs: Date.now() - startedAt };
   }
 
+  function feedScrollHeight() {
+    return Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
+  }
+
+  function loadedFeedCount(snapshot = feedHydrationSnapshot()) {
+    return Math.max(Number(snapshot.storyMessages || 0), Number(snapshot.topLevelArticles || 0));
+  }
+
+  async function waitForPostScrollHydration(previousHeight, previousLoadedCount) {
+    const timeoutMs = Number(CONFIG.postScrollHydrationTimeoutMs || 0);
+    const pollMs = Math.max(50, Number(CONFIG.postScrollHydrationPollMs || 350));
+    const startedAt = Date.now();
+    let readyPolls = 0;
+    let snapshot = feedHydrationSnapshot();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const height = feedScrollHeight();
+      const loadedCount = loadedFeedCount(snapshot);
+      const progressed = height > previousHeight || loadedCount > previousLoadedCount;
+      if (!snapshot.loading && progressed) {
+        return { ...snapshot, height, loadedCount, progressed: true, waitedMs: Date.now() - startedAt };
+      }
+      // At the end of a feed there may be no new card. Once Facebook has been
+      // ready for a few polls, let the normal idle-round guard decide whether
+      // the scan should stop instead of waiting the full timeout every round.
+      if (!snapshot.loading) {
+        readyPolls += 1;
+        if (readyPolls >= 3) {
+          return { ...snapshot, height, loadedCount, progressed, waitedMs: Date.now() - startedAt };
+        }
+      } else {
+        readyPolls = 0;
+      }
+      await sleep(pollMs);
+      snapshot = feedHydrationSnapshot();
+    }
+
+    const height = feedScrollHeight();
+    const loadedCount = loadedFeedCount(snapshot);
+    return {
+      ...snapshot,
+      height,
+      loadedCount,
+      progressed: height > previousHeight || loadedCount > previousLoadedCount,
+      timedOut: true,
+      waitedMs: Date.now() - startedAt,
+    };
+  }
+
   async function run(options = {}) {
     if (typeof document === "undefined") throw new Error("Chỉ chạy script này trên trang Facebook trong trình duyệt.");
     Object.assign(CONFIG, options);
@@ -1475,12 +1528,16 @@
 
       if (state.stopped) break;
 
-      const before = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      window.scrollTo({ top: before, behavior: "smooth" });
-      await sleep(CONFIG.scrollIntervalMs);
-      const after = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      idleRounds = after <= lastHeight ? idleRounds + 1 : 0;
+      const before = feedScrollHeight();
+      const previousLoadedCount = loadedFeedCount(feedHydrationSnapshot());
+      // Smooth scrolling can leave the viewport between hydration states and
+      // makes the fixed sleep below sample the skeleton instead of the feed.
+      window.scrollTo({ top: before, behavior: "auto" });
+      const hydrated = await waitForPostScrollHydration(before, previousLoadedCount);
+      const after = hydrated.height;
+      idleRounds = hydrated.progressed && after > lastHeight ? 0 : idleRounds + 1;
       lastHeight = after;
+      if (!hydrated.progressed) await sleep(CONFIG.scrollIntervalMs);
     }
 
     const reachedHardLimit = !state.stopped && (

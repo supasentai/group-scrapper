@@ -12,3 +12,7 @@ node_modules/
 
 # Local checkpoint backups; keep the project manifest tracked separately.
 checkpoints.backup*.json
+
+# Edge profiles for local CDP runners
+.edge-profile-*/
+.cdp-profiles/
