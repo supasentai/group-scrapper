@@ -24,7 +24,7 @@ function usage() {
     "  --checkpoints-file <path>  Primary JSON group/checkpoint source (default .\\checkpoints.json)",
     "  --groups-file <path>       Legacy Vietnamese group list CSV with TÊN HỘI NHÓM and LINK",
     "  --resume-manifest <path>   Resume from a prior batch manifest",
-    "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action",
+    "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action,profile_limited",
     "  --results-dir <path>       Results directory (default .\\results)",
     "  --days <n>                 Collector lookback days (default 30)",
     "  --capture-mode <mode>      Collector mode: all (default) or classified",
@@ -48,10 +48,10 @@ function parsePositiveInteger(value, flag, { allowZero = false } = {}) {
 }
 
 function parseRetryStatuses(value) {
-  const allowed = new Set(["failed", "stopped", "not_run", "needs_user_action"]);
+  const allowed = new Set(["failed", "stopped", "not_run", "needs_user_action", "profile_limited"]);
   const statuses = [...new Set(String(value || "").split(",").map((status) => status.trim()).filter(Boolean))];
   if (!statuses.length || statuses.some((status) => !allowed.has(status))) {
-    throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action");
+    throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action,profile_limited");
   }
   return statuses;
 }
@@ -204,7 +204,7 @@ function parseCheckpointsJson(input) {
     const inputRow = Number(record.input_row || entries.length + 1);
     if (!Number.isSafeInteger(inputRow) || inputRow <= 0) throw new Error(`checkpoints_file_input_row_invalid:${key}`);
     const explicitStatus = String(record.status || "").trim();
-    const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action"]);
+    const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action", "profile_limited"]);
     if (record.enabled !== false && explicitStatus && !supportedStatuses.has(explicitStatus)) {
       throw new Error(`checkpoints_file_status_invalid:${key}:${explicitStatus}`);
     }
@@ -319,13 +319,13 @@ function parseArgs(argv = process.argv.slice(2)) {
 function prepareEntries(parsed) {
   const seen = new Map();
   return parsed.entries.map((entry) => {
-    if (entry.status !== "pending") return { ...entry, run_id: null, row_count: null, needs_user_action: null };
-    if (!entry.group_name) return { ...entry, status: "skipped_invalid", error: "missing_group_name", run_id: null, row_count: null, needs_user_action: null };
+    if (entry.status !== "pending") return { ...entry, run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
+    if (!entry.group_name) return { ...entry, status: "skipped_invalid", error: "missing_group_name", run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
     let groupUrl;
     try {
       groupUrl = browserRunner.validateGroupUrl(entry.group_url);
     } catch (error) {
-      return { ...entry, status: "skipped_invalid", error: String(error.message || error), run_id: null, row_count: null, needs_user_action: null };
+      return { ...entry, status: "skipped_invalid", error: String(error.message || error), run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
     }
     if (seen.has(groupUrl)) {
       return {
@@ -336,10 +336,12 @@ function prepareEntries(parsed) {
         run_id: null,
         row_count: null,
         needs_user_action: null,
+        profile_port: null,
+        profile_limit: null,
       };
     }
     seen.set(groupUrl, entry.input_row);
-    return { ...entry, group_url: groupUrl, status: "pending", error: null, run_id: null, row_count: null, needs_user_action: null };
+    return { ...entry, group_url: groupUrl, status: "pending", error: null, run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
   });
 }
 
@@ -414,6 +416,11 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
   if (hasNeedsUserAction && !retrySet.has("needs_user_action")) {
     throw new Error("resume_needs_user_action_requires_explicit_retry_status");
   }
+  const hasProfileLimit = resumeManifest.status === "profile_limited"
+    || resumeManifest.groups.some((entry) => entry.status === "profile_limited");
+  if (hasProfileLimit && !retrySet.has("profile_limited")) {
+    throw new Error("resume_profile_limited_requires_explicit_retry_status");
+  }
 
   for (const group of groups) {
     const prior = previous.get(resumeEntryKey(group));
@@ -430,6 +437,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = prior.run_id || null;
       group.row_count = prior.row_count ?? null;
       group.needs_user_action = prior.needs_user_action || null;
+      group.profile_port = prior.profile_port || null;
+      group.profile_limit = prior.profile_limit || null;
       group.error = group.error || prior.error || null;
       continue;
     }
@@ -440,6 +449,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = null;
       group.row_count = null;
       group.needs_user_action = null;
+      group.profile_port = null;
+      group.profile_limit = null;
       continue;
     }
     if (group.status !== "pending") {
@@ -447,6 +458,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = prior.run_id || null;
       group.row_count = prior.row_count ?? null;
       group.needs_user_action = prior.needs_user_action || null;
+      group.profile_port = prior.profile_port || null;
+      group.profile_limit = prior.profile_limit || null;
       group.error = group.error || prior.error || null;
       continue;
     }
@@ -455,6 +468,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
     group.run_id = prior.run_id || null;
     group.row_count = prior.row_count ?? null;
     group.needs_user_action = prior.needs_user_action || null;
+    group.profile_port = prior.profile_port || null;
+    group.profile_limit = prior.profile_limit || null;
     group.error = prior.error || null;
   }
   return groups;
@@ -559,23 +574,35 @@ function readValidManifest(outcome, expectedGroupUrl = "") {
 function normalizeOutcome(outcome, expectedGroupUrl = "") {
   if (!outcome || typeof outcome !== "object") return { status: "failed", error: "browser_runner_no_result" };
   if (outcome.status === "needs_user_action") {
-    return { status: "needs_user_action", run_id: outcome.run_id || null, row_count: null, needs_user_action: outcome.needs_user_action || "user_action_required", error: null };
+    return { status: "needs_user_action", run_id: outcome.run_id || null, row_count: null, needs_user_action: outcome.needs_user_action || "user_action_required", profile_port: outcome.profile_port || null, profile_limit: outcome.profile_limit || null, error: null };
   }
-  if (outcome.status === "error") return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, error: outcome.error || "browser_runner_error" };
+  if (outcome.status === "profile_limited") {
+    return {
+      status: "profile_limited",
+      run_id: outcome.run_id || null,
+      row_count: outcome.row_count ?? null,
+      needs_user_action: outcome.needs_user_action || "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+      profile_port: outcome.profile_port || outcome.files?.profile_port || null,
+      profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null,
+      checkpoint_saved: false,
+      error: null,
+    };
+  }
+  if (outcome.status === "error") return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null, error: outcome.error || "browser_runner_error" };
   try {
     const { manifest, manifestPath } = readValidManifest(outcome, expectedGroupUrl);
     if (outcome.status !== manifest.status) throw new Error("browser_runner_summary_manifest_status_mismatch");
     if (manifest.status === "zero_result") {
       if (manifest.row_count !== 0) throw new Error("zero_result_manifest_has_rows");
-      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, needs_user_action: null, error: null, manifest_path: manifestPath };
+      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
     if (manifest.status === "completed") {
       if (manifest.row_count <= 0) throw new Error("completed_manifest_has_no_rows");
-      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, error: null, manifest_path: manifestPath };
+      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
-    return { status: "stopped", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, error: outcome.error || "browser_runner_stopped", manifest_path: manifestPath };
+    return { status: "stopped", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: outcome.error || "browser_runner_stopped", manifest_path: manifestPath };
   } catch (error) {
-    return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, error: String(error.message || error) };
+    return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, profile_port: outcome.profile_port || null, profile_limit: outcome.profile_limit || null, error: String(error.message || error) };
   }
 }
 
@@ -621,7 +648,9 @@ function runBatch(config, dependencies = {}) {
     if (group.status !== "pending") continue;
     if (blocked) {
       group.status = "not_run";
-      group.error = "batch_stopped_after_needs_user_action";
+      group.error = blocked === "profile_limited"
+        ? "batch_stopped_after_profile_limit"
+        : "batch_stopped_after_needs_user_action";
       continue;
     }
     let outcome;
@@ -632,7 +661,8 @@ function runBatch(config, dependencies = {}) {
     }
     const normalized = normalizeOutcome(outcome, group.group_url);
     Object.assign(group, normalized);
-    if (group.status === "needs_user_action") blocked = true;
+    if (group.status === "needs_user_action") blocked = "needs_user_action";
+    if (group.status === "profile_limited") blocked = "profile_limited";
   }
   const finishedAt = new Date();
   const counts = countStatuses(groups);
@@ -641,7 +671,9 @@ function runBatch(config, dependencies = {}) {
     batch_run_id: batchRunId,
     started_at: startedAt.toISOString(),
     finished_at: finishedAt.toISOString(),
-    status: counts.needs_user_action
+    status: counts.profile_limited
+      ? "profile_limited"
+      : counts.needs_user_action
       ? "needs_user_action"
       : counts.failed
         ? "completed_with_errors"

@@ -102,6 +102,52 @@ try {
   assert.equal(fs.existsSync(manifest.manifest_path), true);
   assert.equal(batch.normalizeOutcome({ status: "zero_result" }).status, "failed");
   assert.equal(batch.normalizeOutcome({ status: "completed", files: {} }).status, "failed");
+  const profileLimit = batch.normalizeOutcome({
+    status: "profile_limited",
+    profile_port: 9223,
+    profile_limit: {
+      status: "profile_limited_hard",
+      confidence: "high",
+      evidence: ["hard_text:/action blocked/i"],
+    },
+  });
+  assert.equal(profileLimit.status, "profile_limited");
+  assert.equal(profileLimit.profile_port, 9223);
+  assert.equal(profileLimit.checkpoint_saved, false);
+
+  const profileGroupsFile = path.join(tempDir, "profile-limited-groups.csv");
+  fs.writeFileSync(profileGroupsFile, [
+    "TÊN HỘI NHÓM,LINK",
+    "Profile Limited,https://www.facebook.com/groups/profile-limited/",
+    "After Profile Limit,https://www.facebook.com/groups/after-profile-limit/",
+  ].join("\n"), "utf8");
+  const profileConfig = batch.parseArgs([
+    "--groups-file", profileGroupsFile,
+    "--results-dir", resultsDir,
+    "--days", "3",
+  ]);
+  let afterProfileLimitCalled = false;
+  const profileManifest = batch.runBatch(profileConfig, {
+    runGroup: (group) => {
+      if (group.group_url.endsWith("/profile-limited/")) {
+        return {
+          status: "profile_limited",
+          profile_port: 9222,
+          profile_limit: { status: "profile_limited_soft", confidence: "medium", evidence: ["soft_text:/something went wrong/i", "feed_no_progress_after_retries"] },
+          needs_user_action: "Switch to port 9223 and retry from the previous checkpoint.",
+        };
+      }
+      afterProfileLimitCalled = true;
+      return { status: "needs_user_action", needs_user_action: "must not run" };
+    },
+  });
+  assert.equal(profileManifest.status, "profile_limited");
+  assert.equal(afterProfileLimitCalled, false);
+  assert.equal(profileManifest.groups[0].status, "profile_limited");
+  assert.equal(profileManifest.groups[0].profile_port, 9222);
+  assert.equal(profileManifest.groups[0].checkpoint_saved, false);
+  assert.equal(profileManifest.groups[1].status, "not_run");
+  assert.equal(profileManifest.groups[1].error, "batch_stopped_after_profile_limit");
 
   const stoppedGroupsFile = path.join(tempDir, "stopped-groups.csv");
   fs.writeFileSync(stoppedGroupsFile, "TÊN HỘI NHÓM,LINK\nStopped Group,https://www.facebook.com/groups/stopped/\n", "utf8");
