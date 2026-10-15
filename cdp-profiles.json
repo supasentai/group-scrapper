@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "rotation": "manual_round_robin",
+  "one_port_per_batch": true,
+  "auto_switch": false,
+  "switch_after": "profile_limited",
+  "profiles": [
+    {
+      "order": 1,
+      "port": 9222,
+      "endpoint": "http://127.0.0.1:9222",
+      "user_data_dir": ".cdp-profiles/edge-9222"
+    },
+    {
+      "order": 2,
+      "port": 9223,
+      "endpoint": "http://127.0.0.1:9223",
+      "user_data_dir": ".cdp-profiles/edge-9223"
+    },
+    {
+      "order": 3,
+      "port": 9224,
+      "endpoint": "http://127.0.0.1:9224",
+      "user_data_dir": ".cdp-profiles/edge-9224"
+    },
+    {
+      "order": 4,
+      "port": 9225,
+      "endpoint": "http://127.0.0.1:9225",
+      "user_data_dir": ".cdp-profiles/edge-9225"
+    }
+  ]
+}
