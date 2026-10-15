@@ -1242,6 +1242,7 @@
     stopReason = "",
     recordsSeen = 0,
     boundaryVerified = false,
+    feedMetrics = null,
   }) {
     return {
       group_url: groupUrl || "",
@@ -1255,6 +1256,7 @@
       stop_reason: stopReason || null,
       records_seen: Number(recordsSeen),
       boundary_verified: Boolean(boundaryVerified),
+      feed_metrics: feedMetrics || null,
     };
   }
 
@@ -1475,13 +1477,19 @@
     let noRecordRounds = 0;
     let unresolvedTimestampRounds = 0;
     let round = 0;
+    const initialFeedSnapshot = await waitForFeedHydration();
+    const feedMetrics = {
+      scrollAttempts: 0,
+      progressEvents: 0,
+      topLevelArticlesBefore: Number(initialFeedSnapshot.topLevelArticles || 0),
+      topLevelArticlesAfter: Number(initialFeedSnapshot.topLevelArticles || 0),
+      loadingSkeletonSeen: Boolean(initialFeedSnapshot.loading),
+    };
 
     globalThis.STOP_FB_LEAD_PILOT = () => {
       state.stopped = true;
       state.stopReason = "manual";
     };
-
-    await waitForFeedHydration();
 
     while (!state.stopped
       && idleRounds < CONFIG.maxIdleRounds
@@ -1535,6 +1543,13 @@
       window.scrollTo({ top: before, behavior: "auto" });
       const hydrated = await waitForPostScrollHydration(before, previousLoadedCount);
       const after = hydrated.height;
+      feedMetrics.scrollAttempts += 1;
+      if (hydrated.progressed) feedMetrics.progressEvents += 1;
+      feedMetrics.topLevelArticlesAfter = Math.max(
+        feedMetrics.topLevelArticlesAfter,
+        Number(hydrated.topLevelArticles || 0),
+      );
+      feedMetrics.loadingSkeletonSeen = feedMetrics.loadingSkeletonSeen || Boolean(hydrated.loading);
       idleRounds = hydrated.progressed && after > lastHeight ? 0 : idleRounds + 1;
       lastHeight = after;
       if (!hydrated.progressed) await sleep(CONFIG.scrollIntervalMs);
@@ -1598,6 +1613,7 @@
       stopReason: state.stopReason,
       recordsSeen: records.size,
       boundaryVerified: oldPostRounds >= CONFIG.maxOldPostRounds,
+      feedMetrics,
     });
     hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
 
@@ -1637,6 +1653,7 @@
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
+        feed_metrics: feedMetrics,
         scan_filename: scanFilename,
         manifest_filename: manifestFilename,
       };

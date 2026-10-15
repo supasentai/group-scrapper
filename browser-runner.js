@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const pilot = require("./fb-group-lead-pilot.js");
 const mergeResults = require("./merge-results.js");
+const { detectProfileLimit } = require("./profile-limit-detector.js");
 
 const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_MAX_RUNTIME_MS = 15 * 60 * 1000;
@@ -861,6 +862,23 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cdpPortFromEndpoint(endpoint) {
+  const parsed = new URL(validateCdpEndpoint(endpoint));
+  return Number(parsed.port || 80);
+}
+
+async function inspectFacebookPage(page, feed = null) {
+  const state = await page.evaluate(() => ({
+    url: location.href,
+    body: (document.body?.innerText || "").slice(0, 20_000),
+  }));
+  return detectProfileLimit({
+    url: state.url,
+    body: state.body,
+    feed,
+  });
+}
+
 async function waitFor(predicate, timeoutMs, intervalMs = 250) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -1008,7 +1026,24 @@ async function runBrowser(config, dependencies = {}) {
     if (!contexts.length) throw new Error("No browser context available over CDP");
     const context = contexts[0];
     page = await context.newPage();
+    files.profile_port = cdpPortFromEndpoint(config.cdpEndpoint);
     await page.goto(buildGroupNavigationUrl(config.groupUrl), { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const initialProfileLimit = await (dependencies.inspectFacebookPage || inspectFacebookPage)(page);
+    files.profile_limit = initialProfileLimit;
+    if (["profile_limited_hard", "profile_limited_soft"].includes(initialProfileLimit.status)) {
+      keepPageOpen = true;
+      return {
+        status: "profile_limited",
+        run_id: null,
+        files,
+        row_count: null,
+        profile_port: files.profile_port,
+        profile_limit: initialProfileLimit,
+        checkpoint_saved: false,
+        needs_user_action: "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+        error: null,
+      };
+    }
     const userAction = await (dependencies.detectUserAction || detectUserAction)(page);
     if (userAction) {
       keepPageOpen = true;
@@ -1060,6 +1095,25 @@ async function runBrowser(config, dependencies = {}) {
       "Collector timed out before completion",
     );
     if (completionResult.error) throw new Error(completionResult.error);
+    const completionProfileLimit = await (dependencies.inspectFacebookPage || inspectFacebookPage)(
+      page,
+      completionResult.lastRun?.feed_metrics || null,
+    );
+    files.profile_limit = completionProfileLimit;
+    if (["profile_limited_hard", "profile_limited_soft"].includes(completionProfileLimit.status)) {
+      keepPageOpen = true;
+      return {
+        status: "profile_limited",
+        run_id: completionResult.lastRun?.run_id || null,
+        files,
+        row_count: completionResult.lastRun?.captured_count ?? null,
+        profile_port: files.profile_port,
+        profile_limit: completionProfileLimit,
+        checkpoint_saved: false,
+        needs_user_action: "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+        error: null,
+      };
+    }
     const waitForPair = dependencies.waitForPair || (async ({ stagingDir, timeoutMs }) => waitFor(
       async () => Boolean(findDownloadPair(fs.readdirSync(stagingDir))),
       timeoutMs,
@@ -1196,6 +1250,7 @@ module.exports = {
   backfillPostRoots,
   buildEdgeLaunchCommand,
   buildGroupNavigationUrl,
+  cdpPortFromEndpoint,
   DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
   deduplicateBackfilledPostRoots,
   disconnectConnectedBrowser,
@@ -1218,6 +1273,7 @@ module.exports = {
   runBrowser,
   safeDownloadName,
   extractPublishedTimeText,
+  inspectFacebookPage,
   isPublishedTimeText,
   updateCheckpointManifest,
   validateCdpEndpoint,
