@@ -892,15 +892,12 @@ async function detectGroupAccess(page) {
     .replace(/\s+/g, " ")
     .trim();
   const notMemberPatterns = [
-    /you must join this group/i,
-    /join this group to see/i,
-    /request to join group/i,
-    /request to join/i,
-    /join group/i,
-    /bạn phải tham gia nhóm/i,
-    /tham gia nhóm để xem/i,
-    /yêu cầu tham gia nhóm/i,
-    /tham gia nhóm/i,
+    /you must join this group(?: to see)?/i,
+    /join this group to see (?:posts|content)/i,
+    /request to join (?:this )?group(?: to see)?/i,
+    /bạn phải tham gia nhóm(?: để xem)?/i,
+    /tham gia nhóm để xem (?:bài viết|nội dung)/i,
+    /yêu cầu tham gia nhóm để xem/i,
   ];
   const matched = notMemberPatterns.find((pattern) => pattern.test(text));
   if (matched) {

@@ -29,6 +29,12 @@ function pageFor(state) {
   assert.equal(accessible.status, "member_or_unknown");
   assert.equal(accessible.action, "continue");
 
+  const publicGroup = await runner.detectGroupAccess(pageFor({
+    body: "Public group. Recent posts are visible.",
+    controls: "Join group Write something Comment",
+  }));
+  assert.equal(publicGroup.status, "member_or_unknown");
+
   console.log("Group access tests passed.");
 })().catch((error) => {
   console.error(error);
