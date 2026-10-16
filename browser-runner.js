@@ -879,6 +879,46 @@ async function inspectFacebookPage(page, feed = null) {
   });
 }
 
+async function detectGroupAccess(page) {
+  const state = await page.evaluate(() => ({
+    body: (document.body?.innerText || "").slice(0, 20_000),
+    controls: [...document.querySelectorAll('button, [role="button"], a')]
+      .map((node) => node.innerText || node.getAttribute("aria-label") || "")
+      .join(" ")
+      .slice(0, 10_000),
+  }));
+  const text = `${state.body || ""} ${state.controls || ""}`
+    .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const notMemberPatterns = [
+    /you must join this group/i,
+    /join this group to see/i,
+    /request to join group/i,
+    /request to join/i,
+    /join group/i,
+    /bạn phải tham gia nhóm/i,
+    /tham gia nhóm để xem/i,
+    /yêu cầu tham gia nhóm/i,
+    /tham gia nhóm/i,
+  ];
+  const matched = notMemberPatterns.find((pattern) => pattern.test(text));
+  if (matched) {
+    return {
+      status: "not_member",
+      confidence: "high",
+      evidence: [`group_access_text:${matched.source}`],
+      action: "try_next_profile",
+    };
+  }
+  return {
+    status: "member_or_unknown",
+    confidence: "low",
+    evidence: [],
+    action: "continue",
+  };
+}
+
 async function waitFor(predicate, timeoutMs, intervalMs = 250) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -1041,6 +1081,22 @@ async function runBrowser(config, dependencies = {}) {
         profile_limit: initialProfileLimit,
         checkpoint_saved: false,
         needs_user_action: "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+        error: null,
+      };
+    }
+    const groupAccess = await (dependencies.detectGroupAccess || detectGroupAccess)(page);
+    files.group_access = groupAccess;
+    if (groupAccess.status === "not_member") {
+      return {
+        status: "not_member",
+        run_id: null,
+        files,
+        row_count: null,
+        profile_port: files.profile_port,
+        profile_limit: initialProfileLimit,
+        group_access: groupAccess,
+        checkpoint_saved: false,
+        needs_user_action: null,
         error: null,
       };
     }
@@ -1251,6 +1307,7 @@ module.exports = {
   buildEdgeLaunchCommand,
   buildGroupNavigationUrl,
   cdpPortFromEndpoint,
+  detectGroupAccess,
   DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
   deduplicateBackfilledPostRoots,
   disconnectConnectedBrowser,
