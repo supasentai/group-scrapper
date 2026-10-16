@@ -24,7 +24,7 @@ function usage() {
     "  --checkpoints-file <path>  Primary JSON group/checkpoint source (default .\\checkpoints.json)",
     "  --groups-file <path>       Legacy Vietnamese group list CSV with TÊN HỘI NHÓM and LINK",
     "  --resume-manifest <path>   Resume from a prior batch manifest",
-    "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action",
+    "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action,profile_limited,not_member,no_available_profile",
     "  --results-dir <path>       Results directory (default .\\results)",
     "  --days <n>                 Collector lookback days (default 30)",
     "  --capture-mode <mode>      Collector mode: all (default) or classified",
@@ -34,6 +34,7 @@ function usage() {
     "  --runner-path <path>       Browser runner script",
     "  --collector-path <path>   Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint",
+    "  --cdp-endpoints <urls>     Comma-separated Edge CDP endpoints; rotates on profile_limited/not_member",
     "  --profile-dir <path>       Dedicated Edge profile directory",
     "  --download-timeout-ms <n>  Download wait timeout",
     "  --post-root-timeout-ms <n> Post-root backfill budget (default 120000)",
@@ -48,10 +49,10 @@ function parsePositiveInteger(value, flag, { allowZero = false } = {}) {
 }
 
 function parseRetryStatuses(value) {
-  const allowed = new Set(["failed", "stopped", "not_run", "needs_user_action"]);
+  const allowed = new Set(["failed", "stopped", "not_run", "needs_user_action", "profile_limited", "not_member", "no_available_profile"]);
   const statuses = [...new Set(String(value || "").split(",").map((status) => status.trim()).filter(Boolean))];
   if (!statuses.length || statuses.some((status) => !allowed.has(status))) {
-    throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action");
+    throw new Error("--retry-status accepts failed,stopped,not_run,needs_user_action,profile_limited,not_member,no_available_profile");
   }
   return statuses;
 }
@@ -204,7 +205,7 @@ function parseCheckpointsJson(input) {
     const inputRow = Number(record.input_row || entries.length + 1);
     if (!Number.isSafeInteger(inputRow) || inputRow <= 0) throw new Error(`checkpoints_file_input_row_invalid:${key}`);
     const explicitStatus = String(record.status || "").trim();
-    const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action"]);
+    const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action", "profile_limited", "not_member", "no_available_profile"]);
     if (record.enabled !== false && explicitStatus && !supportedStatuses.has(explicitStatus)) {
       throw new Error(`checkpoints_file_status_invalid:${key}:${explicitStatus}`);
     }
@@ -272,6 +273,12 @@ function parseArgs(argv = process.argv.slice(2)) {
     runnerPath: DEFAULT_RUNNER_PATH,
     collectorPath: DEFAULT_COLLECTOR_PATH,
     cdpEndpoint: "http://127.0.0.1:9222",
+    cdpEndpoints: [
+      "http://127.0.0.1:9222",
+      "http://127.0.0.1:9223",
+      "http://127.0.0.1:9224",
+      "http://127.0.0.1:9225",
+    ],
     profileDir: path.join(os.homedir(), "AppData", "Local", "Microsoft", "Edge", "User Data", "CodexGroupScraper"),
     downloadTimeoutMs: 60 * 1000,
     postRootBackfillTimeoutMs: browserRunner.DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
@@ -279,7 +286,7 @@ function parseArgs(argv = process.argv.slice(2)) {
   };
   const valueFlags = new Set([
     "--groups-file", "--checkpoints-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms",
-    "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint",
+    "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint", "--cdp-endpoints",
     "--profile-dir", "--download-timeout-ms", "--post-root-timeout-ms",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
@@ -307,7 +314,17 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--child-timeout-ms") config.childTimeoutMs = parsePositiveInteger(value, flag);
     else if (flag === "--runner-path") config.runnerPath = path.resolve(value);
     else if (flag === "--collector-path") config.collectorPath = path.resolve(value);
-    else if (flag === "--cdp-endpoint") config.cdpEndpoint = browserRunner.validateCdpEndpoint(value);
+    else if (flag === "--cdp-endpoint") {
+      config.cdpEndpoint = browserRunner.validateCdpEndpoint(value);
+      config.cdpEndpoints = [config.cdpEndpoint];
+    }
+    else if (flag === "--cdp-endpoints") {
+      const endpoints = [...new Set(String(value).split(",").map((endpoint) => endpoint.trim()).filter(Boolean))]
+        .map((endpoint) => browserRunner.validateCdpEndpoint(endpoint));
+      if (!endpoints.length) throw new Error("--cdp-endpoints requires at least one endpoint");
+      config.cdpEndpoints = endpoints;
+      config.cdpEndpoint = endpoints[0];
+    }
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
     else if (flag === "--post-root-timeout-ms") config.postRootBackfillTimeoutMs = parsePositiveInteger(value, flag);
@@ -319,13 +336,13 @@ function parseArgs(argv = process.argv.slice(2)) {
 function prepareEntries(parsed) {
   const seen = new Map();
   return parsed.entries.map((entry) => {
-    if (entry.status !== "pending") return { ...entry, run_id: null, row_count: null, needs_user_action: null };
-    if (!entry.group_name) return { ...entry, status: "skipped_invalid", error: "missing_group_name", run_id: null, row_count: null, needs_user_action: null };
+    if (entry.status !== "pending") return { ...entry, run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
+    if (!entry.group_name) return { ...entry, status: "skipped_invalid", error: "missing_group_name", run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
     let groupUrl;
     try {
       groupUrl = browserRunner.validateGroupUrl(entry.group_url);
     } catch (error) {
-      return { ...entry, status: "skipped_invalid", error: String(error.message || error), run_id: null, row_count: null, needs_user_action: null };
+      return { ...entry, status: "skipped_invalid", error: String(error.message || error), run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
     }
     if (seen.has(groupUrl)) {
       return {
@@ -336,10 +353,12 @@ function prepareEntries(parsed) {
         run_id: null,
         row_count: null,
         needs_user_action: null,
+        profile_port: null,
+        profile_limit: null,
       };
     }
     seen.set(groupUrl, entry.input_row);
-    return { ...entry, group_url: groupUrl, status: "pending", error: null, run_id: null, row_count: null, needs_user_action: null };
+    return { ...entry, group_url: groupUrl, status: "pending", error: null, run_id: null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null };
   });
 }
 
@@ -414,6 +433,16 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
   if (hasNeedsUserAction && !retrySet.has("needs_user_action")) {
     throw new Error("resume_needs_user_action_requires_explicit_retry_status");
   }
+  const hasProfileLimit = resumeManifest.status === "profile_limited"
+    || resumeManifest.groups.some((entry) => entry.status === "profile_limited");
+  if (hasProfileLimit && !retrySet.has("profile_limited")) {
+    throw new Error("resume_profile_limited_requires_explicit_retry_status");
+  }
+  const hasProfileGap = ["not_member", "no_available_profile"].some((status) => resumeManifest.status === status
+    || resumeManifest.groups.some((entry) => entry.status === status));
+  if (hasProfileGap && !["not_member", "no_available_profile"].some((status) => retrySet.has(status))) {
+    throw new Error("resume_profile_access_gap_requires_explicit_retry_status");
+  }
 
   for (const group of groups) {
     const prior = previous.get(resumeEntryKey(group));
@@ -430,6 +459,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = prior.run_id || null;
       group.row_count = prior.row_count ?? null;
       group.needs_user_action = prior.needs_user_action || null;
+      group.profile_port = prior.profile_port || null;
+      group.profile_limit = prior.profile_limit || null;
       group.error = group.error || prior.error || null;
       continue;
     }
@@ -440,6 +471,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = null;
       group.row_count = null;
       group.needs_user_action = null;
+      group.profile_port = null;
+      group.profile_limit = null;
       continue;
     }
     if (group.status !== "pending") {
@@ -447,6 +480,8 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
       group.run_id = prior.run_id || null;
       group.row_count = prior.row_count ?? null;
       group.needs_user_action = prior.needs_user_action || null;
+      group.profile_port = prior.profile_port || null;
+      group.profile_limit = prior.profile_limit || null;
       group.error = group.error || prior.error || null;
       continue;
     }
@@ -455,19 +490,21 @@ function applyResumeState(groups, resumeManifest, retryStatuses) {
     group.run_id = prior.run_id || null;
     group.row_count = prior.row_count ?? null;
     group.needs_user_action = prior.needs_user_action || null;
+    group.profile_port = prior.profile_port || null;
+    group.profile_limit = prior.profile_limit || null;
     group.error = prior.error || null;
   }
   return groups;
 }
 
-function makeRunnerArgs(group, config) {
+function makeRunnerArgs(group, config, cdpEndpoint = config.cdpEndpoint) {
   const checkpointsFile = config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE;
   return [
     config.runnerPath,
     "--group-url", group.group_url,
     "--group-name", group.group_name,
     "--collector-path", config.collectorPath,
-    "--cdp-endpoint", config.cdpEndpoint,
+    "--cdp-endpoint", cdpEndpoint,
     "--days", String(config.days),
     "--capture-mode", config.captureMode || "all",
     "--max-rounds", String(config.maxRounds),
@@ -559,23 +596,62 @@ function readValidManifest(outcome, expectedGroupUrl = "") {
 function normalizeOutcome(outcome, expectedGroupUrl = "") {
   if (!outcome || typeof outcome !== "object") return { status: "failed", error: "browser_runner_no_result" };
   if (outcome.status === "needs_user_action") {
-    return { status: "needs_user_action", run_id: outcome.run_id || null, row_count: null, needs_user_action: outcome.needs_user_action || "user_action_required", error: null };
+    return { status: "needs_user_action", run_id: outcome.run_id || null, row_count: null, needs_user_action: outcome.needs_user_action || "user_action_required", profile_port: outcome.profile_port || null, profile_limit: outcome.profile_limit || null, error: null };
   }
-  if (outcome.status === "error") return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, error: outcome.error || "browser_runner_error" };
+  if (outcome.status === "profile_limited") {
+    return {
+      status: "profile_limited",
+      run_id: outcome.run_id || null,
+      row_count: outcome.row_count ?? null,
+      needs_user_action: outcome.needs_user_action || "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+      profile_port: outcome.profile_port || outcome.files?.profile_port || null,
+      profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null,
+      checkpoint_saved: false,
+      error: null,
+    };
+  }
+  if (outcome.status === "not_member") {
+    return {
+      status: "not_member",
+      run_id: outcome.run_id || null,
+      row_count: null,
+      needs_user_action: null,
+      profile_port: outcome.profile_port || outcome.files?.profile_port || null,
+      profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null,
+      group_access: outcome.group_access || outcome.files?.group_access || null,
+      checkpoint_saved: false,
+      error: null,
+    };
+  }
+  if (outcome.status === "no_available_profile") {
+    return {
+      status: "no_available_profile",
+      run_id: null,
+      row_count: null,
+      needs_user_action: null,
+      profile_port: null,
+      profile_limit: null,
+      group_access: null,
+      checkpoint_saved: false,
+      profile_attempts: outcome.profile_attempts || [],
+      error: outcome.error || "no_profile_can_access_group",
+    };
+  }
+  if (outcome.status === "error") return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null, error: outcome.error || "browser_runner_error" };
   try {
     const { manifest, manifestPath } = readValidManifest(outcome, expectedGroupUrl);
     if (outcome.status !== manifest.status) throw new Error("browser_runner_summary_manifest_status_mismatch");
     if (manifest.status === "zero_result") {
       if (manifest.row_count !== 0) throw new Error("zero_result_manifest_has_rows");
-      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, needs_user_action: null, error: null, manifest_path: manifestPath };
+      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
     if (manifest.status === "completed") {
       if (manifest.row_count <= 0) throw new Error("completed_manifest_has_no_rows");
-      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, error: null, manifest_path: manifestPath };
+      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
-    return { status: "stopped", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, error: outcome.error || "browser_runner_stopped", manifest_path: manifestPath };
+    return { status: "stopped", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: outcome.error || "browser_runner_stopped", manifest_path: manifestPath };
   } catch (error) {
-    return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, error: String(error.message || error) };
+    return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, profile_port: outcome.profile_port || null, profile_limit: outcome.profile_limit || null, error: String(error.message || error) };
   }
 }
 
@@ -598,6 +674,22 @@ function batchManifestFilename(batchRunId) {
   return `batch_manifest_${batchRunId}.json`;
 }
 
+function configuredCdpEndpoints(config) {
+  const values = Array.isArray(config.cdpEndpoints) && config.cdpEndpoints.length
+    ? config.cdpEndpoints
+    : [config.cdpEndpoint];
+  return [...new Set(values.map((endpoint) => browserRunner.validateCdpEndpoint(endpoint)))];
+}
+
+function findNextProfileIndex(endpoints, startIndex, attempted, disabled) {
+  for (let offset = 0; offset < endpoints.length; offset += 1) {
+    const index = (startIndex + offset) % endpoints.length;
+    const endpoint = endpoints[index];
+    if (!attempted.has(endpoint) && !disabled.has(endpoint)) return index;
+  }
+  return -1;
+}
+
 function runBatch(config, dependencies = {}) {
   const inputPath = path.resolve(config.groupsFile || config.checkpointsFile);
   const inputBuffer = fs.readFileSync(inputPath);
@@ -614,25 +706,81 @@ function runBatch(config, dependencies = {}) {
   const requestedGroupCount = groups.filter((group) => group.status === "pending").length;
   const resumeManifest = config.resumeManifest ? readResumeManifest(config.resumeManifest) : null;
   if (resumeManifest) applyResumeState(groups, resumeManifest, config.retryStatuses);
-  const runner = dependencies.runGroup || ((group) => invokeBrowserRunner(group, config));
+  const endpoints = configuredCdpEndpoints(config);
+  const runner = dependencies.runGroup || ((group, runConfig) => invokeBrowserRunner(group, runConfig));
   const startedAt = new Date();
   let blocked = false;
+  const disabledProfiles = new Set();
+  let activeProfileIndex = 0;
   for (const group of groups) {
     if (group.status !== "pending") continue;
     if (blocked) {
       group.status = "not_run";
-      group.error = "batch_stopped_after_needs_user_action";
+      group.error = blocked === "all_profiles_unavailable"
+        ? "batch_stopped_after_all_profiles_unavailable"
+        : blocked === "needs_user_action"
+          ? "batch_stopped_after_needs_user_action"
+          : "batch_stopped_after_profile_limit";
       continue;
     }
-    let outcome;
-    try {
-      outcome = runner(group, config);
-    } catch (error) {
-      outcome = { status: "error", error: String(error.stack || error) };
+    const attemptedProfiles = [];
+    const attemptedEndpoints = new Set();
+    let cursor = activeProfileIndex;
+    let normalized = null;
+    while (attemptedEndpoints.size < endpoints.length) {
+      const profileIndex = findNextProfileIndex(endpoints, cursor, attemptedEndpoints, disabledProfiles);
+      if (profileIndex < 0) break;
+      const endpoint = endpoints[profileIndex];
+      attemptedEndpoints.add(endpoint);
+      let outcome;
+      try {
+        outcome = runner(group, {
+          ...config,
+          cdpEndpoint: endpoint,
+          cdpEndpoints: endpoints,
+          activeCdpEndpoint: endpoint,
+        });
+      } catch (error) {
+        outcome = { status: "error", error: String(error.stack || error), profile_port: browserRunner.cdpPortFromEndpoint(endpoint) };
+      }
+      normalized = normalizeOutcome(outcome, group.group_url);
+      attemptedProfiles.push({
+        endpoint,
+        port: browserRunner.cdpPortFromEndpoint(endpoint),
+        status: normalized.status,
+        error: normalized.error || null,
+      });
+      if (normalized.status === "profile_limited") {
+        disabledProfiles.add(endpoint);
+        cursor = (profileIndex + 1) % endpoints.length;
+        activeProfileIndex = cursor;
+        continue;
+      }
+      if (normalized.status === "not_member") {
+        cursor = (profileIndex + 1) % endpoints.length;
+        activeProfileIndex = cursor;
+        continue;
+      }
+      activeProfileIndex = profileIndex;
+      break;
     }
-    const normalized = normalizeOutcome(outcome, group.group_url);
+    if (!normalized || ["profile_limited", "not_member"].includes(normalized.status)) {
+      normalized = {
+        status: "no_available_profile",
+        run_id: null,
+        row_count: null,
+        needs_user_action: null,
+        profile_port: null,
+        profile_limit: null,
+        group_access: null,
+        checkpoint_saved: false,
+        error: "no_profile_can_access_group",
+      };
+    }
+    normalized.profile_attempts = attemptedProfiles;
     Object.assign(group, normalized);
-    if (group.status === "needs_user_action") blocked = true;
+    if (group.status === "needs_user_action") blocked = "needs_user_action";
+    if (disabledProfiles.size === endpoints.length) blocked = "all_profiles_unavailable";
   }
   const finishedAt = new Date();
   const counts = countStatuses(groups);
@@ -643,6 +791,8 @@ function runBatch(config, dependencies = {}) {
     finished_at: finishedAt.toISOString(),
     status: counts.needs_user_action
       ? "needs_user_action"
+      : counts.no_available_profile
+        ? "completed_with_profile_gaps"
       : counts.failed
         ? "completed_with_errors"
         : counts.stopped
@@ -659,6 +809,7 @@ function runBatch(config, dependencies = {}) {
     resume_manifest_path: resumeManifest ? path.resolve(config.resumeManifest) : null,
     resume_input_hash_match: resumeManifest ? resumeManifest.input_hash === sha256(inputBuffer) : null,
     retry_statuses: config.retryStatuses || [],
+    cdp_endpoints: endpoints,
     runner_timeout_ms: runnerTimeoutMs(config),
     groups,
     counts,

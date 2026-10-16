@@ -106,6 +106,28 @@ Ingestion chỉ nhận cặp `fb_group_scan_*.csv` + manifest tương ứng, ki�
 
 Runner dùng Edge CDP với profile riêng, không nhập mật khẩu, OTP hoặc CAPTCHA. Nếu Playwright chưa có, runner báo dependency thiếu và không tự cài.
 
+### CDP preflight bắt buộc
+
+Trước mỗi lượt chạy, mở các phiên Edge CDP bằng profile riêng. Không dùng chung `user-data-dir` giữa các cổng:
+
+```powershell
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9222"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9223 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9223"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9224 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9224"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9225 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9225"
+```
+
+Đăng nhập thủ công vào profile tương ứng, rồi kiểm tra từng cổng:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:9222/json/version
+Invoke-RestMethod http://127.0.0.1:9223/json/version
+Invoke-RestMethod http://127.0.0.1:9224/json/version
+Invoke-RestMethod http://127.0.0.1:9225/json/version
+```
+
+Danh sách 4 profile và thứ tự vòng tròn nằm trong [cdp-profiles.json](C:/Users/ADMIN/Documents/ChatGPT/group-scrapper/cdp-profiles.json). Chỉ bắt đầu batch khi các cổng trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Dùng `--cdp-endpoints` để batch tự thử theo thứ tự 9222 → 9223 → 9224 → 9225 → 9222. `profile_limited` sẽ vô hiệu hóa profile đó cho phần còn lại của batch; `not_member` chỉ bỏ qua cặp profile/group hiện tại. Các trạng thái `network_or_cdp_error` và `feed_dom_stalled` không được coi là Facebook limit; lần lượt kiểm tra kết nối hoặc reload/recheck.
+
 Chuẩn bị profile một lần:
 
 ```powershell
@@ -127,7 +149,7 @@ node .\browser-runner.js `
   --results-dir .\results
 ```
 
-Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`), inject checkpoint map và collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Sau khi hoàn tất an toàn, runner chỉ đóng page/tab do chính nó tạo và không đóng Edge hoặc các tab đang có; khi gặp login wall, checkpoint, CAPTCHA hoặc `needs_user_action`, page được giữ mở để người dùng xử lý. Thiếu dependency trả JSON `error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
+Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`), inject checkpoint map và collector local qua CDP, chờ CSV + manifest, ingest không phá hủy rồi merge theo `run_id`. Trước và sau collector, runner kiểm tra tín hiệu limit và ghi `profile_port`/`profile_limit` vào summary. Khi gặp hard/soft limit, trạng thái là `profile_limited`, checkpoint không được cập nhật và page được giữ mở để người dùng chuyển profile. Sau khi hoàn tất an toàn, runner chỉ đóng page/tab do chính nó tạo và không đóng Edge hoặc các tab đang có; khi gặp login wall, checkpoint, CAPTCHA hoặc `needs_user_action`, page được giữ mở để người dùng xử lý. Thiếu dependency trả JSON `error`. Phase 1 chỉ xử lý một group mỗi lần; không tự nhập credential, không xử lý CAPTCHA và không điều khiển spreadsheet.
 
 ### Batch Runner Phase 2
 
@@ -150,13 +172,14 @@ Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`),
 node .\batch-runner.js `
   --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
+  --cdp-endpoints "http://127.0.0.1:9222,http://127.0.0.1:9223,http://127.0.0.1:9224,http://127.0.0.1:9225" `
   --days 3 `
   --max-runtime-ms 900000
 ```
 
 `captureMode=all` là mặc định: collector chỉ áp dụng checkpoint/date window, dọn UI và technical dedupe; noise, seed-like, low-intent và text ngắn vẫn nằm trong scan raw. Classification chỉ là bước sau, dùng `--classify` ở aggregator/merge.
 
-Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
+Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, danh sách endpoint, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group phía sau là `not_run`. Với `profile_limited` hoặc `not_member`, batch tự thử profile kế tiếp; nếu cả danh sách đều không truy cập được group thì ghi `no_available_profile`, không cập nhật checkpoint. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
 ### Cross-group Aggregation Phase 3
 

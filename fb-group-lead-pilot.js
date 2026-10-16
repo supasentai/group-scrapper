@@ -46,6 +46,20 @@
     // boundary above.
     maxNoRecordRounds: 3,
     maxUnresolvedTimestampRounds: 3,
+    // Facebook can render loading skeletons for several seconds after the
+    // group route is ready. Do not interpret that hydration window as a
+    // verified zero-result boundary.
+    feedHydrationGraceMs: 12_000,
+    feedHydrationPollMs: 350,
+    // A scroll can trigger a second Facebook hydration cycle. Do not sample
+    // the feed while its next card is still a loading skeleton.
+    postScrollHydrationTimeoutMs: 12_000,
+    postScrollHydrationPollMs: 350,
+    // A story card without a direct /posts/ link can expose its permalink only
+    // after the visible timestamp is clicked. Keep this interaction bounded so
+    // one malformed card cannot stall the scan.
+    postPermalinkInteractionWaitMs: 1_500,
+    postPermalinkRestoreWaitMs: 700,
     maxRounds: 0,
     maxRuntimeMs: 0,
     maxExpandClicksPerRound: 12,
@@ -195,7 +209,10 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const normalizeSpace = (value) => String(value || "")
+    .replace(/[\p{Cf}\u034f]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   function isLikelyUiGroupHeading(value) {
     return UI_GROUP_HEADINGS.has(normalizeSpace(value).toLowerCase());
@@ -801,6 +818,76 @@
     };
   }
 
+  function getTimeLinkLabel(link) {
+    const labels = [
+      link?.innerText,
+      link?.textContent,
+      link?.getAttribute?.("aria-label"),
+      link?.getAttribute?.("title"),
+      link?.getAttribute?.("data-tooltip-content"),
+    ].map(normalizeSpace).filter(Boolean);
+    return labels.find((value) => {
+      TIME_TEXT_PATTERN.lastIndex = 0;
+      return TIME_TEXT_PATTERN.test(value) || Boolean(parseFacebookTime(value));
+    }) || "";
+  }
+
+  function getVisiblePostUrlFromDocument(groupUrl) {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (dialog) {
+      const dialogPostUrl = [...dialog.querySelectorAll("a[href]")]
+        .map((candidate) => canonicalPostUrl(candidate.href))
+        .find((url) => url && isPostInGroup(url, groupUrl));
+      if (dialogPostUrl) return dialogPostUrl;
+    }
+    const routeUrl = canonicalPostUrl(typeof location !== "undefined" ? location.href : "");
+    return routeUrl && isPostInGroup(routeUrl, groupUrl) ? routeUrl : "";
+  }
+
+  async function resolvePostUrlByInteraction(article, groupUrl) {
+    if (typeof document === "undefined" || typeof location === "undefined") return "";
+    const candidates = [...article.querySelectorAll("a[href]")]
+      .filter((link) => isVisibleNode(link))
+      .filter((link) => !canonicalPostUrl(link.href))
+      .filter((link) => isExactGroupLink(link.href, groupUrl))
+      .filter((link) => Boolean(getTimeLinkLabel(link)));
+
+    const trustedResolver = globalThis.__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__;
+    if (typeof trustedResolver === "function") {
+      for (const candidate of candidates.slice(0, 2)) {
+        const resolved = await trustedResolver({
+          groupUrl,
+          href: candidate.href,
+          label: getTimeLinkLabel(candidate),
+        });
+        if (resolved) return resolved;
+      }
+      return "";
+    }
+
+    for (const link of candidates.slice(0, 2)) {
+      const beforeUrl = location.href;
+      try {
+        link.click();
+        await sleep(Number(CONFIG.postPermalinkInteractionWaitMs || 1_500));
+        const resolved = getVisiblePostUrlFromDocument(groupUrl);
+        if (resolved) return resolved;
+      } catch (_error) {
+        // Facebook may replace the link/card synchronously during navigation.
+      } finally {
+        if (location.href !== beforeUrl) {
+          try {
+            history.back();
+            await sleep(Number(CONFIG.postPermalinkRestoreWaitMs || 700));
+          } catch (_error) {
+            // Leave the current Facebook route untouched if history restoration fails.
+          }
+        }
+      }
+    }
+    return "";
+  }
+
   function findContentLink(article, postUrl, isRootArticle = false) {
     const own = getOwnArticleClone(article);
     const candidates = [...own.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')]
@@ -869,8 +956,29 @@
   }
 
   function getTopLevelArticles() {
-    return [...document.querySelectorAll('div[role="article"]')]
+    const loadedArticles = [...document.querySelectorAll('div[role="article"]')]
+      .filter((article) => !article.querySelector('[aria-label="Đang tải..."], [data-visualcompletion="loading-state"]'))
       .filter((article) => !article.parentElement?.closest('div[role="article"]'));
+    if (loadedArticles.length) return loadedArticles;
+
+    // Some Facebook feed variants expose the story body but omit the
+    // role="article" wrapper. Keep the smallest useful card ancestor so the
+    // normal author/time/text extraction can still operate on it.
+    const containers = [];
+    for (const message of document.querySelectorAll('[data-ad-rendering-role="story_message"]')) {
+      let fallback = null;
+      let node = message.parentElement;
+      for (let depth = 0; node && depth <= 10; depth += 1, node = node.parentElement) {
+        const links = node.querySelectorAll('a[href]').length;
+        if (links >= 2 && !fallback) fallback = node;
+        if (node.querySelector('[data-ad-rendering-role="profile_name"], [data-ad-rendering-role="actor_name"]')) {
+          fallback = node;
+          break;
+        }
+      }
+      if (fallback && !containers.includes(fallback)) containers.push(fallback);
+    }
+    return containers;
   }
 
   function inferSourceType(isRootArticle, contentLinkType, articleDepth) {
@@ -882,16 +990,34 @@
     return "unresolved";
   }
 
-  function collectRenderedRecords() {
+  async function collectRenderedRecords(interactionState = {}) {
     const records = [];
     const currentGroupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
-    for (const rootArticle of getTopLevelArticles()) {
-      const rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
-      const postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
-      const fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
-      const postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
-      if (!postUrl || !isPostInGroup(postUrl, currentGroupUrl)) continue;
-      const rootHasOwnPostLink = Boolean(postLink);
+    const rootArticles = getTopLevelArticles();
+    for (const [rootIndex, initialRootArticle] of rootArticles.entries()) {
+      let rootArticle = initialRootArticle;
+      let rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
+      let postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
+      let fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
+      let postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
+      let recoveredPostUrl = "";
+      const attemptedContainers = interactionState.permalinkInteractionAttempts
+        || (interactionState.permalinkInteractionAttempts = new WeakSet());
+      if (!postUrl && !attemptedContainers.has(rootArticle)) {
+        attemptedContainers.add(rootArticle);
+        recoveredPostUrl = await resolvePostUrlByInteraction(rootArticle, currentGroupUrl);
+        postUrl = recoveredPostUrl;
+        // A trusted CDP click may restore the feed and replace the original
+        // card node. Re-read that card before extracting author/time/text.
+        rootArticle = getTopLevelArticles()[rootIndex] || rootArticle;
+        rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
+        postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
+        fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
+        postUrl = canonicalPostUrl((postLink || fallbackLink)?.href) || recoveredPostUrl;
+      }
+      const trustedRecoveredPost = Boolean(recoveredPostUrl && postUrl === recoveredPostUrl);
+      if (!postUrl || (!isPostInGroup(postUrl, currentGroupUrl) && !trustedRecoveredPost)) continue;
+      const rootHasOwnPostLink = Boolean(postLink || recoveredPostUrl);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];
@@ -1116,6 +1242,7 @@
     stopReason = "",
     recordsSeen = 0,
     boundaryVerified = false,
+    feedMetrics = null,
   }) {
     return {
       group_url: groupUrl || "",
@@ -1129,6 +1256,7 @@
       stop_reason: stopReason || null,
       records_seen: Number(recordsSeen),
       boundary_verified: Boolean(boundaryVerified),
+      feed_metrics: feedMetrics || null,
     };
   }
 
@@ -1237,6 +1365,90 @@
     return buttons.length;
   }
 
+  function isVisibleNode(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && rect.width > 0
+      && rect.height > 0;
+  }
+
+  function feedHydrationSnapshot() {
+    const loadingNodes = [...document.querySelectorAll(
+      '[aria-label="Đang tải..."], [aria-label="Loading…"], [aria-label="Loading..."], [role="progressbar"], [data-visualcompletion="loading-state"]',
+    )];
+    return {
+      loading: loadingNodes.some(isVisibleNode),
+      storyMessages: document.querySelectorAll('[data-ad-rendering-role="story_message"]').length,
+      topLevelArticles: getTopLevelArticles().length,
+    };
+  }
+
+  async function waitForFeedHydration() {
+    const graceMs = Number(CONFIG.feedHydrationGraceMs || 0);
+    const pollMs = Math.max(50, Number(CONFIG.feedHydrationPollMs || 350));
+    const startedAt = Date.now();
+    let snapshot = feedHydrationSnapshot();
+    while (Date.now() - startedAt < graceMs) {
+      if (!snapshot.loading && (snapshot.storyMessages > 0 || snapshot.topLevelArticles > 0)) break;
+      if (!snapshot.loading && document.readyState === "complete") break;
+      await sleep(pollMs);
+      snapshot = feedHydrationSnapshot();
+    }
+    return { ...snapshot, waitedMs: Date.now() - startedAt };
+  }
+
+  function feedScrollHeight() {
+    return Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
+  }
+
+  function loadedFeedCount(snapshot = feedHydrationSnapshot()) {
+    return Math.max(Number(snapshot.storyMessages || 0), Number(snapshot.topLevelArticles || 0));
+  }
+
+  async function waitForPostScrollHydration(previousHeight, previousLoadedCount) {
+    const timeoutMs = Number(CONFIG.postScrollHydrationTimeoutMs || 0);
+    const pollMs = Math.max(50, Number(CONFIG.postScrollHydrationPollMs || 350));
+    const startedAt = Date.now();
+    let readyPolls = 0;
+    let snapshot = feedHydrationSnapshot();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const height = feedScrollHeight();
+      const loadedCount = loadedFeedCount(snapshot);
+      const progressed = height > previousHeight || loadedCount > previousLoadedCount;
+      if (!snapshot.loading && progressed) {
+        return { ...snapshot, height, loadedCount, progressed: true, waitedMs: Date.now() - startedAt };
+      }
+      // At the end of a feed there may be no new card. Once Facebook has been
+      // ready for a few polls, let the normal idle-round guard decide whether
+      // the scan should stop instead of waiting the full timeout every round.
+      if (!snapshot.loading) {
+        readyPolls += 1;
+        if (readyPolls >= 3) {
+          return { ...snapshot, height, loadedCount, progressed, waitedMs: Date.now() - startedAt };
+        }
+      } else {
+        readyPolls = 0;
+      }
+      await sleep(pollMs);
+      snapshot = feedHydrationSnapshot();
+    }
+
+    const height = feedScrollHeight();
+    const loadedCount = loadedFeedCount(snapshot);
+    return {
+      ...snapshot,
+      height,
+      loadedCount,
+      progressed: height > previousHeight || loadedCount > previousLoadedCount,
+      timedOut: true,
+      waitedMs: Date.now() - startedAt,
+    };
+  }
+
   async function run(options = {}) {
     if (typeof document === "undefined") throw new Error("Chỉ chạy script này trên trang Facebook trong trình duyệt.");
     Object.assign(CONFIG, options);
@@ -1253,6 +1465,7 @@
     const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
+    const interactionState = { permalinkInteractionAttempts: new WeakSet() };
     const groupContext = getGroupContext(options.groupName);
     const groupUrl = groupContext.groupUrl || canonicalGroupUrl(location.href);
     const scanStartedAt = new Date();
@@ -1264,6 +1477,14 @@
     let noRecordRounds = 0;
     let unresolvedTimestampRounds = 0;
     let round = 0;
+    const initialFeedSnapshot = await waitForFeedHydration();
+    const feedMetrics = {
+      scrollAttempts: 0,
+      progressEvents: 0,
+      topLevelArticlesBefore: Number(initialFeedSnapshot.topLevelArticles || 0),
+      topLevelArticlesAfter: Number(initialFeedSnapshot.topLevelArticles || 0),
+      loadingSkeletonSeen: Boolean(initialFeedSnapshot.loading),
+    };
 
     globalThis.STOP_FB_LEAD_PILOT = () => {
       state.stopped = true;
@@ -1277,7 +1498,7 @@
       && (!CONFIG.maxRuntimeMs || Date.now() - scanStartedAt.getTime() < CONFIG.maxRuntimeMs)) {
       round += 1;
       await expandVisibleDiscussion();
-      for (const record of collectRenderedRecords()) records.set(record.key, record);
+      for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
 
       const allRecords = [...records.values()];
       const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff, scanStartedAt), groupContext);
@@ -1315,12 +1536,23 @@
 
       if (state.stopped) break;
 
-      const before = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      window.scrollTo({ top: before, behavior: "smooth" });
-      await sleep(CONFIG.scrollIntervalMs);
-      const after = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      idleRounds = after <= lastHeight ? idleRounds + 1 : 0;
+      const before = feedScrollHeight();
+      const previousLoadedCount = loadedFeedCount(feedHydrationSnapshot());
+      // Smooth scrolling can leave the viewport between hydration states and
+      // makes the fixed sleep below sample the skeleton instead of the feed.
+      window.scrollTo({ top: before, behavior: "auto" });
+      const hydrated = await waitForPostScrollHydration(before, previousLoadedCount);
+      const after = hydrated.height;
+      feedMetrics.scrollAttempts += 1;
+      if (hydrated.progressed) feedMetrics.progressEvents += 1;
+      feedMetrics.topLevelArticlesAfter = Math.max(
+        feedMetrics.topLevelArticlesAfter,
+        Number(hydrated.topLevelArticles || 0),
+      );
+      feedMetrics.loadingSkeletonSeen = feedMetrics.loadingSkeletonSeen || Boolean(hydrated.loading);
+      idleRounds = hydrated.progressed && after > lastHeight ? 0 : idleRounds + 1;
       lastHeight = after;
+      if (!hydrated.progressed) await sleep(CONFIG.scrollIntervalMs);
     }
 
     const reachedHardLimit = !state.stopped && (
@@ -1332,7 +1564,7 @@
       state.stopReason = "hard_limit";
     }
 
-    for (const record of collectRenderedRecords()) records.set(record.key, record);
+    for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
     const filteredRecords = filterRecordsSince([...records.values()], cutoff, scanStartedAt);
     const capturedRows = captureRecords(filteredRecords, groupContext);
     const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
@@ -1381,6 +1613,7 @@
       stopReason: state.stopReason,
       recordsSeen: records.size,
       boundaryVerified: oldPostRounds >= CONFIG.maxOldPostRounds,
+      feedMetrics,
     });
     hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
 
@@ -1420,6 +1653,7 @@
         classified_count: classified.length,
         leads_count: leads.length,
         audit_count: audit.length,
+        feed_metrics: feedMetrics,
         scan_filename: scanFilename,
         manifest_filename: manifestFilename,
       };

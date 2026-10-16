@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const pilot = require("./fb-group-lead-pilot.js");
 const mergeResults = require("./merge-results.js");
+const { detectProfileLimit } = require("./profile-limit-detector.js");
 
 const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_MAX_RUNTIME_MS = 15 * 60 * 1000;
@@ -861,6 +862,60 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cdpPortFromEndpoint(endpoint) {
+  const parsed = new URL(validateCdpEndpoint(endpoint));
+  return Number(parsed.port || 80);
+}
+
+async function inspectFacebookPage(page, feed = null) {
+  const state = await page.evaluate(() => ({
+    url: location.href,
+    body: (document.body?.innerText || "").slice(0, 20_000),
+  }));
+  return detectProfileLimit({
+    url: state.url,
+    body: state.body,
+    feed,
+  });
+}
+
+async function detectGroupAccess(page) {
+  const state = await page.evaluate(() => ({
+    body: (document.body?.innerText || "").slice(0, 20_000),
+    controls: [...document.querySelectorAll('button, [role="button"], a')]
+      .map((node) => node.innerText || node.getAttribute("aria-label") || "")
+      .join(" ")
+      .slice(0, 10_000),
+  }));
+  const text = `${state.body || ""} ${state.controls || ""}`
+    .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const notMemberPatterns = [
+    /you must join this group(?: to see)?/i,
+    /join this group to see (?:posts|content)/i,
+    /request to join (?:this )?group(?: to see)?/i,
+    /bạn phải tham gia nhóm(?: để xem)?/i,
+    /tham gia nhóm để xem (?:bài viết|nội dung)/i,
+    /yêu cầu tham gia nhóm để xem/i,
+  ];
+  const matched = notMemberPatterns.find((pattern) => pattern.test(text));
+  if (matched) {
+    return {
+      status: "not_member",
+      confidence: "high",
+      evidence: [`group_access_text:${matched.source}`],
+      action: "try_next_profile",
+    };
+  }
+  return {
+    status: "member_or_unknown",
+    confidence: "low",
+    evidence: [],
+    action: "continue",
+  };
+}
+
 async function waitFor(predicate, timeoutMs, intervalMs = 250) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -885,6 +940,77 @@ async function detectUserAction(page) {
     return "Unable to inspect Facebook authentication state";
   }
   return null;
+}
+
+async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, label } = {}) {
+  const beforeUrl = page.url();
+  const targetHref = String(href || "");
+  const targetLabel = String(label || "");
+  if (!targetHref || !groupUrl) return "";
+  const isGroupPostRoute = (value) => {
+    const url = pilot.canonicalPostUrl(value);
+    return Boolean(url && /\/groups\/[^/]+\/posts\/\d+\/$/i.test(url));
+  };
+
+  const anchorIndex = await page.evaluate(({ targetHref: expectedHref, targetLabel: expectedLabel }) => {
+    const normalize = (value) => String(value || "")
+      .replace(/[\p{Cf}\u034f]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return [...document.querySelectorAll("a[href]")].findIndex((anchor) => {
+      if (anchor.href !== expectedHref) return false;
+      const labels = [anchor.innerText, anchor.textContent, anchor.getAttribute("aria-label")]
+        .map(normalize)
+        .filter(Boolean);
+      return !expectedLabel || labels.includes(normalize(expectedLabel));
+    });
+  }, { targetHref, targetLabel });
+  if (anchorIndex < 0) return "";
+
+  const readResolvedPostUrl = async () => {
+    const routeUrl = pilot.canonicalPostUrl(page.url());
+    // Facebook may replace a numeric group id with its vanity slug after the
+    // click. The clicked anchor was already restricted to the target group;
+    // validate the resulting route shape without comparing id and slug.
+    if (isGroupPostRoute(routeUrl)) return routeUrl;
+    const dialogUrl = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog) return "";
+      return [...dialog.querySelectorAll("a[href]")]
+        .map((anchor) => anchor.href)
+        .find((value) => /\/groups\/[^/]+\/posts\/\d+\/?(?:[?#]|$)/i.test(value)) || "";
+    });
+    const canonicalDialogUrl = pilot.canonicalPostUrl(dialogUrl);
+    return canonicalDialogUrl && isGroupPostRoute(canonicalDialogUrl)
+      ? canonicalDialogUrl
+      : "";
+  };
+
+  let resolved = "";
+  try {
+    await page.locator("a[href]").nth(anchorIndex).click({ force: true, timeout: 5_000 });
+    await waitFor(async () => {
+      resolved = await readResolvedPostUrl();
+      return Boolean(resolved);
+    }, 8_000, 250);
+  } finally {
+    if (page.url() !== beforeUrl) {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: 10_000 }).catch(() => {});
+      const restored = await waitFor(
+        () => pilot.canonicalGroupUrl(page.url()) === pilot.canonicalGroupUrl(groupUrl)
+          && !pilot.canonicalPostUrl(page.url()),
+        8_000,
+        250,
+      );
+      if (!restored) {
+        await page.goto(buildGroupNavigationUrl(groupUrl), {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        }).catch(() => {});
+      }
+    }
+  }
+  return resolved;
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -937,7 +1063,40 @@ async function runBrowser(config, dependencies = {}) {
     if (!contexts.length) throw new Error("No browser context available over CDP");
     const context = contexts[0];
     page = await context.newPage();
+    files.profile_port = cdpPortFromEndpoint(config.cdpEndpoint);
     await page.goto(buildGroupNavigationUrl(config.groupUrl), { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const initialProfileLimit = await (dependencies.inspectFacebookPage || inspectFacebookPage)(page);
+    files.profile_limit = initialProfileLimit;
+    if (["profile_limited_hard", "profile_limited_soft"].includes(initialProfileLimit.status)) {
+      keepPageOpen = true;
+      return {
+        status: "profile_limited",
+        run_id: null,
+        files,
+        row_count: null,
+        profile_port: files.profile_port,
+        profile_limit: initialProfileLimit,
+        checkpoint_saved: false,
+        needs_user_action: "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+        error: null,
+      };
+    }
+    const groupAccess = await (dependencies.detectGroupAccess || detectGroupAccess)(page);
+    files.group_access = groupAccess;
+    if (groupAccess.status === "not_member") {
+      return {
+        status: "not_member",
+        run_id: null,
+        files,
+        row_count: null,
+        profile_port: files.profile_port,
+        profile_limit: initialProfileLimit,
+        group_access: groupAccess,
+        checkpoint_saved: false,
+        needs_user_action: null,
+        error: null,
+      };
+    }
     const userAction = await (dependencies.detectUserAction || detectUserAction)(page);
     if (userAction) {
       keepPageOpen = true;
@@ -960,6 +1119,10 @@ async function runBrowser(config, dependencies = {}) {
       }
     };
     page.on("download", downloadHandler);
+    await page.exposeFunction(
+      "__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__",
+      (payload) => resolvePostPermalinkWithTrustedClick(page, payload),
+    );
 
     await page.evaluate(({ source, options, checkpoints }) => {
       globalThis.__FB_GROUP_CHECKPOINTS__ = checkpoints;
@@ -985,6 +1148,25 @@ async function runBrowser(config, dependencies = {}) {
       "Collector timed out before completion",
     );
     if (completionResult.error) throw new Error(completionResult.error);
+    const completionProfileLimit = await (dependencies.inspectFacebookPage || inspectFacebookPage)(
+      page,
+      completionResult.lastRun?.feed_metrics || null,
+    );
+    files.profile_limit = completionProfileLimit;
+    if (["profile_limited_hard", "profile_limited_soft"].includes(completionProfileLimit.status)) {
+      keepPageOpen = true;
+      return {
+        status: "profile_limited",
+        run_id: completionResult.lastRun?.run_id || null,
+        files,
+        row_count: completionResult.lastRun?.captured_count ?? null,
+        profile_port: files.profile_port,
+        profile_limit: completionProfileLimit,
+        checkpoint_saved: false,
+        needs_user_action: "Profile limit detected; switch profile manually and retry from the previous checkpoint.",
+        error: null,
+      };
+    }
     const waitForPair = dependencies.waitForPair || (async ({ stagingDir, timeoutMs }) => waitFor(
       async () => Boolean(findDownloadPair(fs.readdirSync(stagingDir))),
       timeoutMs,
@@ -1121,6 +1303,8 @@ module.exports = {
   backfillPostRoots,
   buildEdgeLaunchCommand,
   buildGroupNavigationUrl,
+  cdpPortFromEndpoint,
+  detectGroupAccess,
   DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
   deduplicateBackfilledPostRoots,
   disconnectConnectedBrowser,
@@ -1133,6 +1317,7 @@ module.exports = {
   normalizePublishedTimeText,
   normalizePublishedAt,
   parseArgs,
+  resolvePostPermalinkWithTrustedClick,
   classifyBackfillError,
   remainingBackfillTimeoutMs,
   normalizeBackfilledPostRoot,
@@ -1142,6 +1327,7 @@ module.exports = {
   runBrowser,
   safeDownloadName,
   extractPublishedTimeText,
+  inspectFacebookPage,
   isPublishedTimeText,
   updateCheckpointManifest,
   validateCdpEndpoint,

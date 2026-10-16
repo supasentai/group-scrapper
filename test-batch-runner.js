@@ -46,6 +46,17 @@ try {
     "--child-timeout-ms", "2000",
   ]);
   assert.ok(batch.runnerTimeoutMs(config) > config.maxRuntimeMs);
+  assert.deepEqual(config.cdpEndpoints, [
+    "http://127.0.0.1:9222",
+    "http://127.0.0.1:9223",
+    "http://127.0.0.1:9224",
+    "http://127.0.0.1:9225",
+  ]);
+  const explicitEndpoints = batch.parseArgs([
+    "--groups-file", groupsFile,
+    "--cdp-endpoints", "http://127.0.0.1:9224,http://127.0.0.1:9225",
+  ]);
+  assert.deepEqual(explicitEndpoints.cdpEndpoints, ["http://127.0.0.1:9224", "http://127.0.0.1:9225"]);
   const runnerArgs = batch.makeRunnerArgs({
     group_url: "https://www.facebook.com/groups/alpha/",
     group_name: "Alpha Group",
@@ -102,6 +113,100 @@ try {
   assert.equal(fs.existsSync(manifest.manifest_path), true);
   assert.equal(batch.normalizeOutcome({ status: "zero_result" }).status, "failed");
   assert.equal(batch.normalizeOutcome({ status: "completed", files: {} }).status, "failed");
+  const profileLimit = batch.normalizeOutcome({
+    status: "profile_limited",
+    profile_port: 9223,
+    profile_limit: {
+      status: "profile_limited_hard",
+      confidence: "high",
+      evidence: ["hard_text:/action blocked/i"],
+    },
+  });
+  assert.equal(profileLimit.status, "profile_limited");
+  assert.equal(profileLimit.profile_port, 9223);
+  assert.equal(profileLimit.checkpoint_saved, false);
+
+  const profileGroupsFile = path.join(tempDir, "profile-limited-groups.csv");
+  fs.writeFileSync(profileGroupsFile, [
+    "TÊN HỘI NHÓM,LINK",
+    "Profile Limited,https://www.facebook.com/groups/profile-limited/",
+    "After Profile Limit,https://www.facebook.com/groups/after-profile-limit/",
+  ].join("\n"), "utf8");
+  const profileConfig = batch.parseArgs([
+    "--groups-file", profileGroupsFile,
+    "--results-dir", resultsDir,
+    "--days", "3",
+  ]);
+  let afterProfileLimitCalled = false;
+  const profileManifest = batch.runBatch(profileConfig, {
+    runGroup: (group) => {
+      if (group.group_url.endsWith("/profile-limited/")) {
+        return {
+          status: "profile_limited",
+          profile_port: 9222,
+          profile_limit: { status: "profile_limited_soft", confidence: "medium", evidence: ["soft_text:/something went wrong/i", "feed_no_progress_after_retries"] },
+          needs_user_action: "Switch to port 9223 and retry from the previous checkpoint.",
+        };
+      }
+      afterProfileLimitCalled = true;
+      return { status: "needs_user_action", needs_user_action: "must not run" };
+    },
+  });
+  assert.equal(profileManifest.status, "completed_with_profile_gaps");
+  assert.equal(afterProfileLimitCalled, false);
+  assert.equal(profileManifest.groups[0].status, "no_available_profile");
+  assert.equal(profileManifest.groups[0].profile_attempts.length, 4);
+  assert.equal(profileManifest.groups[0].checkpoint_saved, false);
+  assert.equal(profileManifest.groups[1].status, "not_run");
+  assert.equal(profileManifest.groups[1].error, "batch_stopped_after_all_profiles_unavailable");
+
+  const rotationGroupsFile = path.join(tempDir, "rotation-groups.csv");
+  fs.writeFileSync(rotationGroupsFile, [
+    "TÊN HỘI NHÓM,LINK",
+    "Rotation A,https://www.facebook.com/groups/rotation-a/",
+    "Rotation B,https://www.facebook.com/groups/rotation-b/",
+    "Rotation C,https://www.facebook.com/groups/rotation-c/",
+  ].join("\n"), "utf8");
+  const rotationConfig = batch.parseArgs([
+    "--groups-file", rotationGroupsFile,
+    "--results-dir", resultsDir,
+    "--cdp-endpoints", "http://127.0.0.1:9222,http://127.0.0.1:9223,http://127.0.0.1:9224,http://127.0.0.1:9225",
+  ]);
+  const rotationCalls = [];
+  const rotationManifest = batch.runBatch(rotationConfig, {
+    runGroup: (group, runConfig) => {
+      const endpoint = runConfig.cdpEndpoint;
+      rotationCalls.push(`${group.group_url}:${endpoint}`);
+      if (group.group_url.endsWith("/rotation-a/") && endpoint.endsWith(":9222")) {
+        return { status: "profile_limited", profile_port: 9222, profile_limit: { status: "profile_limited_hard" } };
+      }
+      if (group.group_url.endsWith("/rotation-b/") && endpoint.endsWith(":9223")) {
+        return { status: "not_member", profile_port: 9223, group_access: { status: "not_member" } };
+      }
+      if (group.group_url.endsWith("/rotation-c/") && endpoint.endsWith(":9224")) {
+        return { status: "profile_limited", profile_port: 9224, profile_limit: { status: "profile_limited_soft" } };
+      }
+      const suffix = group.group_url.split("/").at(-2);
+      const status = group.group_url.endsWith("/rotation-b/") ? "zero_result" : "completed";
+      const rowCount = status === "zero_result" ? 0 : 1;
+      const artifacts = writeArtifacts(`rotation-${suffix}-${endpoint.slice(-4)}`, group.group_url, `scan-${suffix}-${endpoint.slice(-4)}`, status, rowCount);
+      return { status, run_id: `scan-${suffix}-${endpoint.slice(-4)}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+    },
+  });
+  assert.deepEqual(rotationCalls, [
+    "https://www.facebook.com/groups/rotation-a/:http://127.0.0.1:9222",
+    "https://www.facebook.com/groups/rotation-a/:http://127.0.0.1:9223",
+    "https://www.facebook.com/groups/rotation-b/:http://127.0.0.1:9223",
+    "https://www.facebook.com/groups/rotation-b/:http://127.0.0.1:9224",
+    "https://www.facebook.com/groups/rotation-c/:http://127.0.0.1:9224",
+    "https://www.facebook.com/groups/rotation-c/:http://127.0.0.1:9225",
+  ]);
+  assert.equal(rotationManifest.groups[0].status, "completed_with_rows");
+  assert.deepEqual(rotationManifest.groups[0].profile_attempts.map((attempt) => attempt.status), ["profile_limited", "completed_with_rows"]);
+  assert.equal(rotationManifest.groups[1].status, "zero_result");
+  assert.deepEqual(rotationManifest.groups[1].profile_attempts.map((attempt) => attempt.status), ["not_member", "zero_result"]);
+  assert.equal(rotationManifest.groups[2].status, "completed_with_rows");
+  assert.deepEqual(rotationManifest.groups[2].profile_attempts.map((attempt) => attempt.status), ["profile_limited", "completed_with_rows"]);
 
   const stoppedGroupsFile = path.join(tempDir, "stopped-groups.csv");
   fs.writeFileSync(stoppedGroupsFile, "TÊN HỘI NHÓM,LINK\nStopped Group,https://www.facebook.com/groups/stopped/\n", "utf8");
