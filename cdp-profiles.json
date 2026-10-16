@@ -2,8 +2,8 @@
   "version": 1,
   "rotation": "manual_round_robin",
   "one_port_per_batch": true,
-  "auto_switch": false,
-  "switch_after": "profile_limited",
+  "auto_switch": true,
+  "switch_after": ["profile_limited", "not_member"],
   "profiles": [
     {
       "order": 1,

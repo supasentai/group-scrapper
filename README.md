@@ -126,7 +126,7 @@ Invoke-RestMethod http://127.0.0.1:9224/json/version
 Invoke-RestMethod http://127.0.0.1:9225/json/version
 ```
 
-Danh sách 4 profile và thứ tự vòng tròn nằm trong [cdp-profiles.json](C:/Users/ADMIN/Documents/ChatGPT/group-scrapper/cdp-profiles.json). Chỉ bắt đầu batch khi cổng được chọn trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Batch không tự chia group qua các cổng; mỗi lần chạy dùng một cổng duy nhất qua `--cdp-endpoint`, mặc định là 9222. Nếu runner trả `profile_limited`, dừng batch, không cập nhật checkpoint và chuyển thủ công sang port kế tiếp theo thứ tự 9222 → 9223 → 9224 → 9225 → 9222 rồi chạy lại từ checkpoint cũ. Các trạng thái `network_or_cdp_error` và `feed_dom_stalled` không được coi là Facebook limit; lần lượt kiểm tra kết nối hoặc reload/recheck.
+Danh sách 4 profile và thứ tự vòng tròn nằm trong [cdp-profiles.json](C:/Users/ADMIN/Documents/ChatGPT/group-scrapper/cdp-profiles.json). Chỉ bắt đầu batch khi các cổng trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Dùng `--cdp-endpoints` để batch tự thử theo thứ tự 9222 → 9223 → 9224 → 9225 → 9222. `profile_limited` sẽ vô hiệu hóa profile đó cho phần còn lại của batch; `not_member` chỉ bỏ qua cặp profile/group hiện tại. Các trạng thái `network_or_cdp_error` và `feed_dom_stalled` không được coi là Facebook limit; lần lượt kiểm tra kết nối hoặc reload/recheck.
 
 Chuẩn bị profile một lần:
 
@@ -172,13 +172,14 @@ Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`),
 node .\batch-runner.js `
   --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
+  --cdp-endpoints "http://127.0.0.1:9222,http://127.0.0.1:9223,http://127.0.0.1:9224,http://127.0.0.1:9225" `
   --days 3 `
   --max-runtime-ms 900000
 ```
 
 `captureMode=all` là mặc định: collector chỉ áp dụng checkpoint/date window, dọn UI và technical dedupe; noise, seed-like, low-intent và text ngắn vẫn nằm trong scan raw. Classification chỉ là bước sau, dùng `--classify` ở aggregator/merge.
 
-Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, số group yêu cầu, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action` hoặc `profile_limited`, batch dừng an toàn và ghi các group hợp lệ phía sau là `not_run`; profile limit giữ `checkpoint_saved=false` và yêu cầu retry rõ ràng với port khác. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
+Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, danh sách endpoint, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group phía sau là `not_run`. Với `profile_limited` hoặc `not_member`, batch tự thử profile kế tiếp; nếu cả danh sách đều không truy cập được group thì ghi `no_available_profile`, không cập nhật checkpoint. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
 ### Cross-group Aggregation Phase 3
 
