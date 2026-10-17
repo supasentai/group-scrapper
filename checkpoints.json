@@ -1,24 +1,24 @@
 {
   "version": 1,
-  "updated_at": "2026-10-16T01:48:23.444Z",
+  "updated_at": "2026-10-17T01:33:39.985Z",
   "groups": {
     "https://www.facebook.com/groups/957334833144318/": {
       "group_url": "https://www.facebook.com/groups/957334833144318/",
       "group_name": "Facelift and Necklift Question and Answer Group",
-      "checkpoint": "2026-10-16T01:34:32.537Z",
+      "checkpoint": "2026-10-17T01:11:34.985Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:34:32.537Z",
-        "started_at": "2026-10-16T01:34:32.537Z",
-        "completed_at": "2026-10-16T01:35:09.246Z",
+        "scan_started_at": "2026-10-17T01:11:34.985Z",
+        "started_at": "2026-10-17T01:11:34.985Z",
+        "completed_at": "2026-10-17T01:12:11.945Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:34:32.537Z",
-        "run_id": "scan_3d_1792114472532",
-        "records_seen": 3,
+        "checkpoint": "2026-10-17T01:11:34.985Z",
+        "run_id": "scan_3d_1792199494978",
+        "records_seen": 5,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:35:09.692Z"
+        "recorded_at": "2026-10-17T01:12:12.523Z"
       },
       "enabled": true
     },
@@ -40,145 +40,146 @@
         "audit_count": 0,
         "recorded_at": "2026-10-15T01:10:10.115Z"
       },
-      "enabled": true
+      "enabled": false,
+      "comment": "Not in current checklist"
     },
     "https://www.facebook.com/groups/1493584241802527/": {
       "group_url": "https://www.facebook.com/groups/1493584241802527/",
       "group_name": "Face lift and Neck Lift support group",
-      "checkpoint": "2026-10-16T01:19:35.339Z",
+      "checkpoint": "2026-10-17T01:12:14.571Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:19:35.339Z",
-        "started_at": "2026-10-16T01:19:35.339Z",
-        "completed_at": "2026-10-16T01:20:12.540Z",
+        "scan_started_at": "2026-10-17T01:12:14.571Z",
+        "started_at": "2026-10-17T01:12:14.571Z",
+        "completed_at": "2026-10-17T01:12:51.444Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:19:35.339Z",
-        "run_id": "scan_3d_1792113575334",
+        "checkpoint": "2026-10-17T01:12:14.571Z",
+        "run_id": "scan_3d_1792199534570",
         "records_seen": 10,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:20:22.405Z"
+        "recorded_at": "2026-10-17T01:12:55.245Z"
       },
       "enabled": true
     },
     "https://www.facebook.com/groups/473931468215531/": {
       "group_url": "https://www.facebook.com/groups/473931468215531/",
       "group_name": "Blepharoplasty Support Group",
-      "checkpoint": "2026-10-16T01:35:11.532Z",
+      "checkpoint": "2026-10-17T01:12:57.434Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:35:11.532Z",
-        "started_at": "2026-10-16T01:35:11.532Z",
-        "completed_at": "2026-10-16T01:36:26.296Z",
+        "scan_started_at": "2026-10-17T01:12:57.434Z",
+        "started_at": "2026-10-17T01:12:57.434Z",
+        "completed_at": "2026-10-17T01:14:37.600Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:35:11.532Z",
-        "run_id": "scan_3d_1792114511523",
-        "records_seen": 27,
+        "checkpoint": "2026-10-17T01:12:57.434Z",
+        "run_id": "scan_3d_1792199577433",
+        "records_seen": 47,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:37:05.850Z"
+        "recorded_at": "2026-10-17T01:15:48.230Z"
       },
       "enabled": true
     },
     "https://www.facebook.com/groups/1052731386791309/": {
       "group_url": "https://www.facebook.com/groups/1052731386791309/",
       "group_name": "deep plane facelift and neck lift support group",
-      "checkpoint": "2026-10-16T01:20:31.918Z",
+      "checkpoint": "2026-10-17T01:15:50.354Z",
       "enabled": true,
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:20:31.918Z",
-        "started_at": "2026-10-16T01:20:31.918Z",
-        "completed_at": "2026-10-16T01:20:56.492Z",
+        "scan_started_at": "2026-10-17T01:15:50.354Z",
+        "started_at": "2026-10-17T01:15:50.354Z",
+        "completed_at": "2026-10-17T01:16:27.759Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:20:31.918Z",
-        "run_id": "scan_3d_1792113631915",
-        "records_seen": 6,
+        "checkpoint": "2026-10-17T01:15:50.354Z",
+        "run_id": "scan_3d_1792199750352",
+        "records_seen": 17,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:21:03.812Z"
+        "recorded_at": "2026-10-17T01:16:45.766Z"
       }
     },
     "https://www.facebook.com/groups/1263383098715932/": {
       "group_url": "https://www.facebook.com/groups/1263383098715932/",
       "group_name": "worldwide face, neck lift and weight loss support group",
-      "checkpoint": "2026-10-16T01:21:05.941Z",
+      "checkpoint": "2026-10-17T01:16:47.982Z",
       "last_run": {
-        "status": "zero_result_after_checkpoint",
-        "scan_started_at": "2026-10-16T01:21:05.941Z",
-        "started_at": "2026-10-16T01:21:05.941Z",
-        "completed_at": "2026-10-16T01:21:30.306Z",
+        "status": "completed_with_rows",
+        "scan_started_at": "2026-10-17T01:16:47.982Z",
+        "started_at": "2026-10-17T01:16:47.982Z",
+        "completed_at": "2026-10-17T01:17:37.054Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:21:05.941Z",
-        "run_id": "scan_3d_1792113665937",
-        "records_seen": 3,
+        "checkpoint": "2026-10-17T01:16:47.982Z",
+        "run_id": "scan_3d_1792199807981",
+        "records_seen": 5,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:21:30.757Z"
+        "recorded_at": "2026-10-17T01:17:37.519Z"
       },
       "enabled": true
     },
     "https://www.facebook.com/groups/536390454675733/": {
       "group_url": "https://www.facebook.com/groups/536390454675733/",
       "group_name": "Facelift Support Group",
-      "checkpoint": "2026-10-16T01:37:07.755Z",
+      "checkpoint": "2026-10-17T01:17:39.392Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:37:07.755Z",
-        "started_at": "2026-10-16T01:37:07.755Z",
-        "completed_at": "2026-10-16T01:39:12.129Z",
+        "scan_started_at": "2026-10-17T01:17:39.392Z",
+        "started_at": "2026-10-17T01:17:39.392Z",
+        "completed_at": "2026-10-17T01:19:31.494Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:37:07.755Z",
-        "run_id": "scan_3d_1792114627750",
-        "records_seen": 48,
+        "checkpoint": "2026-10-17T01:17:39.392Z",
+        "run_id": "scan_3d_1792199859392",
+        "records_seen": 41,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:40:01.660Z"
+        "recorded_at": "2026-10-17T01:20:24.346Z"
       },
       "enabled": true
     },
     "https://www.facebook.com/groups/1146474503904898/": {
       "group_url": "https://www.facebook.com/groups/1146474503904898/",
       "group_name": "Facelift & Necklift Turkey",
-      "checkpoint": "2026-10-16T01:40:05.085Z",
+      "checkpoint": "2026-10-17T01:20:26.309Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:40:05.085Z",
-        "started_at": "2026-10-16T01:40:05.085Z",
-        "completed_at": "2026-10-16T01:41:19.353Z",
+        "scan_started_at": "2026-10-17T01:20:26.309Z",
+        "started_at": "2026-10-17T01:20:26.309Z",
+        "completed_at": "2026-10-17T01:21:03.450Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:40:05.085Z",
-        "run_id": "scan_3d_1792114805081",
-        "records_seen": 19,
+        "checkpoint": "2026-10-17T01:20:26.309Z",
+        "run_id": "scan_3d_1792200026308",
+        "records_seen": 14,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:41:31.795Z"
+        "recorded_at": "2026-10-17T01:21:21.751Z"
       },
       "enabled": true
     },
     "https://www.facebook.com/groups/1013711189799224/": {
       "group_url": "https://www.facebook.com/groups/1013711189799224/",
       "group_name": "Facelift / Eye Lift Turkey",
-      "checkpoint": "2026-10-16T01:21:47.359Z",
+      "checkpoint": "2026-10-17T01:21:23.540Z",
       "last_run": {
-        "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:21:47.359Z",
-        "started_at": "2026-10-16T01:21:47.359Z",
-        "completed_at": "2026-10-16T01:22:23.993Z",
+        "status": "zero_result_after_checkpoint",
+        "scan_started_at": "2026-10-17T01:21:23.540Z",
+        "started_at": "2026-10-17T01:21:23.540Z",
+        "completed_at": "2026-10-17T01:21:47.752Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:21:47.359Z",
-        "run_id": "scan_3d_1792113707355",
-        "records_seen": 5,
+        "checkpoint": "2026-10-17T01:21:23.540Z",
+        "run_id": "scan_3d_1792200083539",
+        "records_seen": 4,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:22:24.435Z"
+        "recorded_at": "2026-10-17T01:21:48.215Z"
       },
       "enabled": true
     },
@@ -206,41 +207,40 @@
     "https://www.facebook.com/groups/surgeryinturkiye/": {
       "group_url": "https://www.facebook.com/groups/surgeryinturkiye/",
       "group_name": "Surgery in Turkey - Surgeon Reviews and Recommendations",
-      "checkpoint": "2026-10-16T01:22:26.401Z",
+      "checkpoint": "2026-10-17T01:21:50.344Z",
       "enabled": true,
-      "comment": "Not in current checklist",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:22:26.401Z",
-        "started_at": "2026-10-16T01:22:26.401Z",
-        "completed_at": "2026-10-16T01:26:09.990Z",
+        "scan_started_at": "2026-10-17T01:21:50.344Z",
+        "started_at": "2026-10-17T01:21:50.344Z",
+        "completed_at": "2026-10-17T01:22:51.740Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:22:26.401Z",
-        "run_id": "scan_3d_1792113746398",
-        "records_seen": 40,
+        "checkpoint": "2026-10-17T01:21:50.344Z",
+        "run_id": "scan_3d_1792200110343",
+        "records_seen": 29,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:27:02.643Z"
+        "recorded_at": "2026-10-17T01:23:26.132Z"
       }
     },
     "https://www.facebook.com/groups/604041441428373/": {
       "group_url": "https://www.facebook.com/groups/604041441428373/",
       "group_name": "Rhinoplasty in Turkey - real experiences, doctor suggestions",
-      "checkpoint": "2026-10-16T01:41:33.492Z",
+      "checkpoint": "2026-10-17T01:23:28.414Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:41:33.492Z",
-        "started_at": "2026-10-16T01:41:33.492Z",
-        "completed_at": "2026-10-16T01:43:25.403Z",
+        "scan_started_at": "2026-10-17T01:23:28.414Z",
+        "started_at": "2026-10-17T01:23:28.414Z",
+        "completed_at": "2026-10-17T01:23:52.568Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:41:33.492Z",
-        "run_id": "scan_3d_1792114893489",
-        "records_seen": 42,
+        "checkpoint": "2026-10-17T01:23:28.414Z",
+        "run_id": "scan_3d_1792200208413",
+        "records_seen": 8,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:44:09.867Z"
+        "recorded_at": "2026-10-17T01:24:02.556Z"
       },
       "enabled": true
     },
@@ -289,20 +289,20 @@
     "https://www.facebook.com/groups/302182326941065/": {
       "group_url": "https://www.facebook.com/groups/302182326941065/",
       "group_name": "Breast implants lift and reduction support",
-      "checkpoint": "2026-10-16T01:44:12.498Z",
+      "checkpoint": "2026-10-17T01:24:44.097Z",
       "last_run": {
         "status": "zero_result_after_checkpoint",
-        "scan_started_at": "2026-10-16T01:44:12.498Z",
-        "started_at": "2026-10-16T01:44:12.498Z",
-        "completed_at": "2026-10-16T01:44:37.356Z",
+        "scan_started_at": "2026-10-17T01:24:44.097Z",
+        "started_at": "2026-10-17T01:24:44.097Z",
+        "completed_at": "2026-10-17T01:25:08.685Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:44:12.498Z",
-        "run_id": "scan_3d_1792115052494",
-        "records_seen": 15,
+        "checkpoint": "2026-10-17T01:24:44.097Z",
+        "run_id": "scan_3d_1792200284096",
+        "records_seen": 7,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:44:37.800Z"
+        "recorded_at": "2026-10-17T01:25:09.160Z"
       },
       "enabled": true
     },
@@ -324,52 +324,52 @@
         "audit_count": 0,
         "recorded_at": "2026-10-16T01:45:17.619Z"
       },
-      "enabled": true
+      "enabled": false,
+      "comment": "Not in current checklist"
     },
     "https://www.facebook.com/groups/1530734608157993/": {
       "group_url": "https://www.facebook.com/groups/1530734608157993/",
       "group_name": "Plastic Surgery in Turkey",
-      "checkpoint": "2026-10-14T00:33:35.312Z",
+      "checkpoint": "2026-10-16T01:00:00.000Z",
       "enabled": true
     },
     "https://www.facebook.com/groups/290533306574241/": {
       "group_url": "https://www.facebook.com/groups/290533306574241/",
       "group_name": "Tummy tuck support group",
-      "checkpoint": "2026-10-10T01:20:49.123Z",
-      "enabled": false,
-      "comment": "Not in current checklist",
+      "checkpoint": "2026-10-17T01:25:50.541Z",
+      "enabled": true,
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-10T01:20:49.123Z",
-        "started_at": "2026-10-10T01:20:49.123Z",
-        "completed_at": "2026-10-10T01:21:30.351Z",
+        "scan_started_at": "2026-10-17T01:25:50.541Z",
+        "started_at": "2026-10-17T01:25:50.541Z",
+        "completed_at": "2026-10-17T01:26:15.022Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-10T01:20:49.123Z",
-        "run_id": "scan_30d_1791595249116",
-        "records_seen": 81,
+        "checkpoint": "2026-10-17T01:25:50.541Z",
+        "run_id": "scan_3d_1792200350539",
+        "records_seen": 4,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-10T01:23:21.216Z"
+        "recorded_at": "2026-10-17T01:26:22.095Z"
       }
     },
     "https://www.facebook.com/groups/547821016940250/": {
       "group_url": "https://www.facebook.com/groups/547821016940250/",
       "group_name": "Tijuana Plastic Surgery & Medical Tourism",
-      "checkpoint": "2026-10-16T01:46:45.378Z",
+      "checkpoint": "2026-10-17T01:26:50.934Z",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:46:45.378Z",
-        "started_at": "2026-10-16T01:46:45.378Z",
-        "completed_at": "2026-10-16T01:47:49.558Z",
+        "scan_started_at": "2026-10-17T01:26:50.934Z",
+        "started_at": "2026-10-17T01:26:50.934Z",
+        "completed_at": "2026-10-17T01:27:53.665Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:46:45.378Z",
-        "run_id": "scan_3d_1792115205374",
-        "records_seen": 39,
+        "checkpoint": "2026-10-17T01:26:50.934Z",
+        "run_id": "scan_3d_1792200410933",
+        "records_seen": 27,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:48:23.444Z"
+        "recorded_at": "2026-10-17T01:28:19.103Z"
       },
       "enabled": true
     },
@@ -399,7 +399,7 @@
       "group_name": "Group 1238064077563409",
       "checkpoint": "2026-10-13T00:15:28.185Z",
       "enabled": false,
-      "comment": "Added from current checklist; group name was not provided.",
+      "comment": "Not in current checklist",
       "last_run": {
         "status": "zero_result_after_checkpoint",
         "scan_started_at": "2026-10-13T00:15:28.185Z",
@@ -420,48 +420,126 @@
       "group_name": "Group 1837470467008684",
       "checkpoint": "2026-10-12T01:00:00.000Z",
       "enabled": false,
-      "comment": "Added from current checklist; group name was not provided."
+      "comment": "Not in current checklist"
     },
     "https://www.facebook.com/groups/670648272394036/": {
       "group_url": "https://www.facebook.com/groups/670648272394036/",
       "group_name": "Group 670648272394036",
-      "checkpoint": "2026-10-16T01:27:51.322Z",
+      "checkpoint": "2026-10-17T01:33:15.084Z",
       "enabled": true,
-      "comment": "Added from current checklist; group name was not provided.",
       "last_run": {
-        "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:27:51.322Z",
-        "started_at": "2026-10-16T01:27:51.322Z",
-        "completed_at": "2026-10-16T01:28:41.874Z",
+        "status": "zero_result_after_checkpoint",
+        "scan_started_at": "2026-10-17T01:33:15.084Z",
+        "started_at": "2026-10-17T01:33:15.084Z",
+        "completed_at": "2026-10-17T01:33:39.536Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:27:51.322Z",
-        "run_id": "scan_3d_1792114071317",
-        "records_seen": 3,
+        "checkpoint": "2026-10-17T01:33:15.084Z",
+        "run_id": "scan_3d_1792200795080",
+        "records_seen": 2,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:28:44.483Z"
+        "recorded_at": "2026-10-17T01:33:39.985Z"
       }
     },
     "https://www.facebook.com/groups/2038671846493827/": {
       "group_url": "https://www.facebook.com/groups/2038671846493827/",
       "group_name": "Group 2038671846493827",
-      "checkpoint": "2026-10-16T01:28:46.734Z",
+      "checkpoint": "2026-10-17T01:31:52.879Z",
       "enabled": true,
-      "comment": "Added from current checklist; checkpoint initialized to 2026-10-13T01:00:00.000Z.",
       "last_run": {
         "status": "completed_with_rows",
-        "scan_started_at": "2026-10-16T01:28:46.734Z",
-        "started_at": "2026-10-16T01:28:46.734Z",
-        "completed_at": "2026-10-16T01:30:37.299Z",
+        "scan_started_at": "2026-10-17T01:31:52.879Z",
+        "started_at": "2026-10-17T01:31:52.879Z",
+        "completed_at": "2026-10-17T01:32:54.727Z",
         "checkpoint_saved": true,
-        "checkpoint": "2026-10-16T01:28:46.734Z",
-        "run_id": "scan_3d_1792114126730",
-        "records_seen": 33,
+        "checkpoint": "2026-10-17T01:31:52.879Z",
+        "run_id": "scan_3d_1792200712876",
+        "records_seen": 24,
         "classified_count": 0,
         "leads_count": 0,
         "audit_count": 0,
-        "recorded_at": "2026-10-16T01:31:20.377Z"
+        "recorded_at": "2026-10-17T01:33:13.245Z"
+      }
+    },
+    "https://www.facebook.com/groups/1694205858156227/": {
+      "group_url": "https://www.facebook.com/groups/1694205858156227/",
+      "group_name": "Group 1694205858156227",
+      "checkpoint": "2026-10-17T01:24:04.602Z",
+      "enabled": true,
+      "last_run": {
+        "status": "completed_with_rows",
+        "scan_started_at": "2026-10-17T01:24:04.602Z",
+        "started_at": "2026-10-17T01:24:04.602Z",
+        "completed_at": "2026-10-17T01:24:41.360Z",
+        "checkpoint_saved": true,
+        "checkpoint": "2026-10-17T01:24:04.602Z",
+        "run_id": "scan_3d_1792200244601",
+        "records_seen": 11,
+        "classified_count": 0,
+        "leads_count": 0,
+        "audit_count": 0,
+        "recorded_at": "2026-10-17T01:24:41.848Z"
+      }
+    },
+    "https://www.facebook.com/groups/allthingscosmeticsurgery/": {
+      "group_url": "https://www.facebook.com/groups/allthingscosmeticsurgery/",
+      "group_name": "Group allthingscosmeticsurgery",
+      "checkpoint": "2026-10-17T01:26:24.090Z",
+      "enabled": true,
+      "last_run": {
+        "status": "zero_result_after_checkpoint",
+        "scan_started_at": "2026-10-17T01:26:24.090Z",
+        "started_at": "2026-10-17T01:26:24.090Z",
+        "completed_at": "2026-10-17T01:26:48.475Z",
+        "checkpoint_saved": true,
+        "checkpoint": "2026-10-17T01:26:24.090Z",
+        "run_id": "scan_3d_1792200384090",
+        "records_seen": 7,
+        "classified_count": 0,
+        "leads_count": 0,
+        "audit_count": 0,
+        "recorded_at": "2026-10-17T01:26:48.932Z"
+      }
+    },
+    "https://www.facebook.com/groups/augmentationbreast/": {
+      "group_url": "https://www.facebook.com/groups/augmentationbreast/",
+      "group_name": "Group augmentationbreast",
+      "checkpoint": "2026-10-17T01:28:21.130Z",
+      "enabled": true,
+      "last_run": {
+        "status": "completed_with_rows",
+        "scan_started_at": "2026-10-17T01:28:21.130Z",
+        "started_at": "2026-10-17T01:28:21.130Z",
+        "completed_at": "2026-10-17T01:29:36.766Z",
+        "checkpoint_saved": true,
+        "checkpoint": "2026-10-17T01:28:21.130Z",
+        "run_id": "scan_3d_1792200501129",
+        "records_seen": 39,
+        "classified_count": 0,
+        "leads_count": 0,
+        "audit_count": 0,
+        "recorded_at": "2026-10-17T01:30:18.376Z"
+      }
+    },
+    "https://www.facebook.com/groups/2127509807455365/": {
+      "group_url": "https://www.facebook.com/groups/2127509807455365/",
+      "group_name": "Group 2127509807455365",
+      "checkpoint": "2026-10-17T01:30:32.793Z",
+      "enabled": true,
+      "last_run": {
+        "status": "completed_with_rows",
+        "scan_started_at": "2026-10-17T01:30:32.793Z",
+        "started_at": "2026-10-17T01:30:32.793Z",
+        "completed_at": "2026-10-17T01:31:22.852Z",
+        "checkpoint_saved": true,
+        "checkpoint": "2026-10-17T01:30:32.793Z",
+        "run_id": "scan_3d_1792200632788",
+        "records_seen": 22,
+        "classified_count": 0,
+        "leads_count": 0,
+        "audit_count": 0,
+        "recorded_at": "2026-10-17T01:31:50.852Z"
       }
     }
   }
