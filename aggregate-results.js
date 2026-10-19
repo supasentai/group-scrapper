@@ -597,6 +597,7 @@ function runAggregate(config, dependencies = {}) {
     unresolved: path.join(resultsDir, `fb_group_aggregate_unresolved_context_${stamp}_utf8.csv`),
     report_json: path.join(resultsDir, `aggregate_report_${stamp}.json`),
     report_md: path.join(resultsDir, `aggregate_report_${stamp}.md`),
+    quality_report: path.join(resultsDir, `quality_report_${stamp}.json`),
   };
   fs.mkdirSync(resultsDir, { recursive: true });
   if (classified) {
@@ -658,6 +659,49 @@ function runAggregate(config, dependencies = {}) {
   // This output is the retained quarantine for rows whose timestamp could
   // not be proven. It is deliberately separate from the final handoff.
   mergeResults.writeCsv(outputs.unresolved, quarantine);
+  const qualityReport = {
+    quality_report_version: 1,
+    generated_at: report.generated_at,
+    status: report.status,
+    batch_manifest_path: report.batch_manifest_path,
+    group_summary: {
+      input: report.input_row_count,
+      requested: report.requested_group_count,
+      by_status: report.group_counts_by_status,
+      released: report.released_groups.length,
+      pending: report.pending_groups.length,
+    },
+    rows: {
+      raw: report.raw_rows,
+      deduped: report.deduped_rows,
+      final: report.in_window_rows,
+      dropped_before_boundary: report.dropped_old_rows,
+      quarantined_unknown_time: report.quarantined_time_rows,
+    },
+    temporal_policy: report.temporal_policy,
+    temporal_exclusions: report.temporal_exclusions,
+    source_type_counts: report.source_type_counts,
+    quality_flags: report.quality_flags,
+    quality_flag_counts: report.quality_flag_counts,
+    profile_rotation: batchManifest.profile_rotation || null,
+    profile_attempts: batchManifest.groups
+      .filter((entry) => Array.isArray(entry.profile_attempts) && entry.profile_attempts.length)
+      .map((entry) => ({
+        group_url: entry.group_url,
+        group_name: entry.group_name,
+        status: entry.status,
+        profile_port: entry.profile_port || null,
+        attempts: entry.profile_attempts,
+      })),
+    pending_groups: report.pending_groups,
+    artifact_issues: report.artifact_issues,
+    outputs: {
+      final: outputs.all,
+      raw_archive: path.join(resultsDir, "raw"),
+      quality_report: outputs.quality_report,
+    },
+  };
+  fs.writeFileSync(outputs.quality_report, `${JSON.stringify(qualityReport, null, 2)}\n`, "utf8");
   fs.writeFileSync(outputs.report_json, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(outputs.report_md, `${markdownReport(report)}\n`, "utf8");
   report.cleanup = {
@@ -670,7 +714,7 @@ function runAggregate(config, dependencies = {}) {
       report.cleanup = cleanupResults(resultsDir, {
         sourceRunIds,
         finalOutputPath: outputs.all,
-        protectedPaths: [batchManifestPath],
+        protectedPaths: [batchManifestPath, outputs.quality_report],
       });
     } catch (error) {
       report.status = "completed_with_cleanup_error";

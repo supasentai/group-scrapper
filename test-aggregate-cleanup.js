@@ -165,6 +165,10 @@ try {
   assert.deepEqual(successReport.cleanup.retention_policy, aggregate.RETENTION_POLICY);
   assert.equal(merge.parseCsv(fs.readFileSync(successReport.outputs.all, "utf8")).length, 1);
   assert.equal(fs.existsSync(successReport.outputs.all), true);
+  assert.equal(fs.existsSync(successReport.outputs.quality_report), true);
+  const successQuality = JSON.parse(fs.readFileSync(successReport.outputs.quality_report, "utf8"));
+  assert.equal(successQuality.rows.final, 1);
+  assert.equal(successQuality.outputs.quality_report, successReport.outputs.quality_report);
   assert.equal(fs.existsSync(path.join(successDir, "raw", successRun, successCsv)), true);
   assert.equal(fs.existsSync(path.join(successDir, successRun)), false);
   assert.equal(fs.existsSync(successReport.outputs.posts), false);
