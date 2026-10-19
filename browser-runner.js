@@ -803,6 +803,7 @@ function updateCheckpointManifest({ filePath, groupUrl, groupName, lastRun }) {
     last_run: {
       ...previousLastRun,
       status: lastRun.run_status || lastRun.status || previousLastRun.status || null,
+      group_name_source: lastRun.group_name_source || previousLastRun.group_name_source || null,
       scan_started_at: startedAt,
       started_at: startedAt,
       completed_at: completedAt,

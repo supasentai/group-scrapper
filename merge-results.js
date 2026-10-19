@@ -106,7 +106,10 @@ function normalizeRows(rows, now) {
     const rawText = String(row.text_excerpt || "");
     const text = pilot.cleanSourceText(rawText, name, timeText);
     const groupUrl = row.group_url || "";
-    const groupName = pilot.isLikelyUiGroupHeading(row.group_name) ? "" : (row.group_name || "");
+    const groupName = pilot.isLikelyUiGroupHeading(row.group_name)
+      || pilot.isPlaceholderGroupName(row.group_name)
+      ? ""
+      : (row.group_name || "");
     const rawContentUrl = String(row.content_url || "").trim();
     const rawPostUrl = String(row.post_url || "").trim();
     const postUrl = pilot.canonicalPostUrl(rawPostUrl || rawContentUrl) || rawPostUrl || rawContentUrl;

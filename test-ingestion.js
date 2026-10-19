@@ -26,6 +26,7 @@ const manifest = pilot.buildRunManifest({
 assert.deepEqual(Object.keys(manifest), [
   "group_url",
   "group_name",
+  "group_name_source",
   "run_id",
   "started_at",
   "completed_at",
@@ -35,6 +36,7 @@ assert.deepEqual(Object.keys(manifest), [
   "stop_reason",
   "records_seen",
   "boundary_verified",
+  "feed_metrics",
 ]);
 assert.equal(manifest.started_at, "2026-10-07T12:00:00.000Z");
 assert.equal(manifest.completed_at, "2026-10-07T12:00:01.000Z");

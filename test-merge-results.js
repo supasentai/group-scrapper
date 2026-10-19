@@ -44,6 +44,11 @@ function policyWithManifestFailures(rawRows, manifest) {
   });
 }
 
+const placeholderGroup = merge.normalizeRows([
+  row({ group_name: "Group 123456789" }),
+], now)[0];
+assert.equal(placeholderGroup.group_name, "");
+
 // Multiple comments under one recovered post collapse to exactly one post row.
 const rawWithRoot = [row(), comment("1"), comment("2")];
 const collapsed = policy(rawWithRoot);

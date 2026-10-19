@@ -153,6 +153,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
       audit_count: 0,
     },
   });
+  assert.ifError(completed.error);
   assert.equal(completed.result.status, "zero_result");
   assert.equal(completed.page.closeCount, 1);
   assert.deepEqual(completed.page.gotoUrls, ["https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL"]);

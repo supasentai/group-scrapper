@@ -218,6 +218,14 @@
     return UI_GROUP_HEADINGS.has(normalizeSpace(value).toLowerCase());
   }
 
+  function isPlaceholderGroupName(value) {
+    const text = normalizeSpace(value);
+    // These names are produced when a checkpoint was created from a URL
+    // before the real Facebook group title was known. They are useful as an
+    // input fallback, but must never outrank a title read from the page.
+    return /^group\s+[a-z0-9][a-z0-9_-]*$/i.test(text);
+  }
+
   function isLikelyMemberCount(value) {
     return /^\d[\d.,]*\s*[KMB]?\s*(?:thành viên|members?)$/i.test(normalizeSpace(value));
   }
@@ -320,9 +328,16 @@
 
   function getGroupContext(groupNameOverride = "") {
     const trustedGroupName = normalizeSpace(groupNameOverride);
-    if (typeof document === "undefined") return { groupName: trustedGroupName, groupUrl: "" };
+    if (typeof document === "undefined") {
+      return {
+        groupName: trustedGroupName,
+        groupUrl: "",
+        groupNameSource: trustedGroupName
+          ? (isPlaceholderGroupName(trustedGroupName) ? "checkpoint_placeholder" : "checkpoint")
+          : "unresolved",
+      };
+    }
     const groupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
-    if (trustedGroupName) return { groupName: trustedGroupName, groupUrl };
     const groupLinkNames = [...document.querySelectorAll("a[href]")]
       .filter((link) => isExactGroupLink(link.href || link.getAttribute("href"), groupUrl))
       .map((link) => normalizeSpace(link.getAttribute("aria-label") || link.textContent))
@@ -331,7 +346,14 @@
       .map((node) => normalizeSpace(node.textContent))
       .filter((value) => value && !isLikelyUiGroupHeading(value) && !isLikelyMemberCount(value) && !isLikelyPostTitle(value));
     const candidates = [...groupLinkNames, ...headingNames];
-    return { groupName: candidates[0] || "", groupUrl };
+    if (candidates[0]) return { groupName: candidates[0], groupUrl, groupNameSource: "dom" };
+    return {
+      groupName: trustedGroupName,
+      groupUrl,
+      groupNameSource: trustedGroupName
+        ? (isPlaceholderGroupName(trustedGroupName) ? "checkpoint_placeholder" : "checkpoint")
+        : "unresolved",
+    };
   }
 
   function checkpointStorageKey(groupUrl) {
@@ -1233,6 +1255,7 @@
   function buildRunManifest({
     groupUrl,
     groupName,
+    groupNameSource = "unknown",
     runId,
     startedAt,
     completedAt,
@@ -1247,6 +1270,7 @@
     return {
       group_url: groupUrl || "",
       group_name: groupName || "",
+      group_name_source: groupNameSource || "unknown",
       run_id: runId,
       started_at: new Date(startedAt).toISOString(),
       completed_at: new Date(completedAt).toISOString(),
@@ -1604,6 +1628,7 @@
     const runManifest = buildRunManifest({
       groupUrl,
       groupName: groupContext.groupName,
+      groupNameSource: groupContext.groupNameSource,
       runId,
       startedAt: scanStartedAt,
       completedAt,
@@ -1635,6 +1660,7 @@
     if (typeof globalThis !== "undefined") {
       globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__ = {
         group_name: groupContext.groupName || "",
+        group_name_source: groupContext.groupNameSource || "unknown",
         group_url: groupUrl,
         scan_started_at: scanStartedAt.toISOString(),
         started_at: scanStartedAt.toISOString(),
@@ -1687,6 +1713,7 @@
     inferAuthorFromText,
     inferSourceType,
     isLikelyUiGroupHeading,
+    isPlaceholderGroupName,
     isLikelyMemberCount,
     isLikelyPostTitle,
     isPostInGroup,
