@@ -29,6 +29,8 @@ try {
     "aggregate_report_old.md",
     "quality_report_old.json",
     "ingestion_report.json",
+    "fb_group_30d_repaired_all_old_utf8.csv",
+    "fb_group_aggregate_all_merged_old_utf8.csv",
   ]) fs.writeFileSync(path.join(resultsDir, name), "intermediate\n", "utf8");
 
   const cleanup = aggregate.cleanupResults(resultsDir, {
@@ -45,6 +47,9 @@ try {
   assert.equal(fs.existsSync(path.join(resultsDir, "fb_group_aggregate_posts_old_utf8.csv")), false);
   assert.equal(fs.existsSync(path.join(resultsDir, "aggregate_report_old.json")), false);
   assert.equal(fs.existsSync(path.join(resultsDir, "ingestion_report.json")), false);
+  assert.equal(fs.existsSync(path.join(resultsDir, "fb_group_30d_repaired_all_old_utf8.csv")), false);
+  assert.equal(fs.existsSync(path.join(resultsDir, "fb_group_aggregate_all_merged_old_utf8.csv")), false);
+  assert.deepEqual(cleanup.retention_policy, aggregate.RETENTION_POLICY);
 
   // Idempotence: the second cleanup has no source/staging entries to remove
   // and must leave the raw archive and final CSV intact.
@@ -157,6 +162,7 @@ try {
   ]), { now: new Date("2026-10-08T12:00:00.000Z") });
   assert.equal(successReport.status, "completed");
   assert.equal(successReport.cleanup.status, "completed");
+  assert.deepEqual(successReport.cleanup.retention_policy, aggregate.RETENTION_POLICY);
   assert.equal(merge.parseCsv(fs.readFileSync(successReport.outputs.all, "utf8")).length, 1);
   assert.equal(fs.existsSync(successReport.outputs.all), true);
   assert.equal(fs.existsSync(path.join(successDir, "raw", successRun, successCsv)), true);

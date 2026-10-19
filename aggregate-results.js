@@ -18,11 +18,17 @@ const TEMPORAL_POLICY = Object.freeze({
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const SCAN_FILENAME_PATTERN = /^fb_group_scan_\d+d_.+\.csv$/i;
 const CLEANUP_INTERMEDIATE_PATTERNS = [
-  /^fb_group_aggregate_(?:all|posts|comments_context|unresolved_context|classified|leads|audit)_.*\.csv$/i,
-  /^aggregate_report_.*\.(?:json|md)$/i,
-  /^quality_report_.*\.json$/i,
-  /^ingestion_report\.json$/i,
+  /^fb_group_(?:aggregate_|\d+d_(?:repaired_)?)(?:all|posts|comments_context|unresolved_context|classified|leads|audit|merged|dedup).*\.csv$/i,
+  /^(?:aggregate_report|quality_report|ingestion_report).*\.(?:json|md)$/i,
+  /^(?:fb_group_aggregate|fb_group_\d+d_).*(?:_merged|_dedup|_repaired|_six_columns|_relative|_v\d+).*\.csv$/i,
 ];
+const RETENTION_POLICY = Object.freeze({
+  raw: "retain_under_raw/<run_id>/",
+  manifests: "retain_batch_and_child_manifests",
+  final: "retain_current_final_output_only",
+  intermediates: "remove_after_successful_aggregate",
+  failed_runs: "retain_for_diagnosis",
+});
 
 function isRawScanFilename(name) {
   return SCAN_FILENAME_PATTERN.test(String(name || ""))
@@ -413,6 +419,7 @@ function cleanupResults(resultsDir, options = {}) {
     removed_paths: removedPaths,
     warnings,
     final_output: finalOutputPath || null,
+    retention_policy: RETENTION_POLICY,
   };
 }
 
@@ -656,6 +663,7 @@ function runAggregate(config, dependencies = {}) {
   report.cleanup = {
     enabled: config.cleanup,
     status: config.cleanup ? "pending" : "disabled",
+    retention_policy: RETENTION_POLICY,
   };
   if (config.cleanup && report.status === "completed") {
     try {
@@ -670,6 +678,7 @@ function runAggregate(config, dependencies = {}) {
         enabled: true,
         status: "failed",
         error: String(error.message || error),
+        retention_policy: RETENTION_POLICY,
       };
     }
     // On cleanup failure the report remains available for diagnosis. On
@@ -684,6 +693,7 @@ function runAggregate(config, dependencies = {}) {
         enabled: true,
         status: "skipped",
         reason: `aggregate_status_${report.status}`,
+        retention_policy: RETENTION_POLICY,
       };
     }
     fs.writeFileSync(outputs.report_json, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -721,6 +731,7 @@ module.exports = {
   runAggregate,
   applyTemporalGate,
   TEMPORAL_POLICY,
+  RETENTION_POLICY,
   temporalBoundaryForGroup,
   isPathWithin,
   validateArtifact,
