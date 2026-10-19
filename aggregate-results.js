@@ -9,6 +9,12 @@ const mergeResults = require("./merge-results.js");
 const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
 const DEFAULT_DAYS = 30;
 const TEMPORAL_FALLBACK_DAYS = 30;
+const TEMPORAL_POLICY = Object.freeze({
+  checkpoint_comparison: "published_at >= checkpoint",
+  missing_checkpoint: "fallback_30d",
+  missing_timestamp: "quarantine",
+  raw_artifacts: "retain",
+});
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const SCAN_FILENAME_PATTERN = /^fb_group_scan_\d+d_.+\.csv$/i;
 const CLEANUP_INTERMEDIATE_PATTERNS = [
@@ -64,6 +70,7 @@ function temporalBoundaryForGroup(entry, now, fallbackDays = TEMPORAL_FALLBACK_D
     boundary_iso: boundary.toISOString(),
     boundary_type: checkpoint ? "checkpoint" : "fallback_30d",
     checkpoint: checkpoint ? checkpoint.toISOString() : null,
+    comparison: TEMPORAL_POLICY.checkpoint_comparison,
   };
 }
 
@@ -99,6 +106,7 @@ function applyTemporalGate(rows, groupEntries, now, fallbackDays = TEMPORAL_FALL
       boundary: value.boundary_iso,
       boundary_type: value.boundary_type,
       checkpoint: value.checkpoint,
+      comparison: value.comparison,
     }])),
   };
 }
@@ -622,6 +630,11 @@ function runAggregate(config, dependencies = {}) {
     dropped_old_rows: old.length,
     unresolved_time_rows: unresolved.length,
     quarantined_time_rows: quarantine.length,
+    temporal_policy: TEMPORAL_POLICY,
+    temporal_exclusions: {
+      before_boundary: old.length,
+      missing_or_unparsed_timestamp: unresolved.length,
+    },
     temporal_boundaries: temporal.boundaries,
     source_type_counts: sourceTypeCounts,
     quality_flags: mergeResults.qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, all.length),
@@ -707,6 +720,7 @@ module.exports = {
   readBatchManifest,
   runAggregate,
   applyTemporalGate,
+  TEMPORAL_POLICY,
   temporalBoundaryForGroup,
   isPathWithin,
   validateArtifact,

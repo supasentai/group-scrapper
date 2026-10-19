@@ -99,8 +99,14 @@ try {
   assert.equal(report.unresolved_time_rows, 2);
   assert.equal(report.temporal_boundaries[checkpointGroup].boundary, "2026-10-01T00:00:00.000Z");
   assert.equal(report.temporal_boundaries[checkpointGroup].boundary_type, "checkpoint");
+  assert.equal(report.temporal_boundaries[checkpointGroup].comparison, "published_at >= checkpoint");
   assert.equal(report.temporal_boundaries[fallbackGroup].boundary, "2026-09-08T00:00:00.000Z");
   assert.equal(report.temporal_boundaries[fallbackGroup].boundary_type, "fallback_30d");
+  assert.deepEqual(report.temporal_exclusions, {
+    before_boundary: 2,
+    missing_or_unparsed_timestamp: 2,
+  });
+  assert.deepEqual(report.temporal_policy, aggregate.TEMPORAL_POLICY);
 
   const finalRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
   const quarantineRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.unresolved, "utf8"));
