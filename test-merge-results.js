@@ -60,6 +60,34 @@ assert.equal(collapsed[0].comment_url, "");
 assert.equal(rawWithRoot[1].source_type, "comment");
 assert.match(rawWithRoot[1].content_url, /comment_id=1/);
 
+// Duplicate post captures with different author metadata still collapse by
+// canonical post URL; the richer text is retained.
+const duplicatePostRows = merge.dedupe(merge.normalizeRows([
+  row({
+    name: "First capture",
+    profile_url: "https://www.facebook.com/first-capture/",
+    text_excerpt: "Short post text.",
+    content_url: `${postUrl}?sorting_setting=CHRONOLOGICAL`,
+  }),
+  row({
+    name: "Second capture",
+    profile_url: "https://www.facebook.com/second-capture/",
+    text_excerpt: "A longer post text that should be retained after URL deduplication.",
+    content_url: `${postUrl}?ref=share`,
+  }),
+], now));
+assert.equal(duplicatePostRows.length, 1);
+assert.equal(duplicatePostRows[0].post_url, postUrl);
+assert.match(duplicatePostRows[0].text_excerpt, /longer post text/);
+
+const duplicateCommentRows = merge.dedupe(merge.normalizeRows([
+  comment("same", { text_excerpt: "Short comment." }),
+  comment("same", { text_excerpt: "A longer version of the same comment." }),
+], now));
+assert.equal(duplicateCommentRows.length, 1);
+assert.match(duplicateCommentRows[0].content_url, /comment_id=same/);
+assert.match(duplicateCommentRows[0].text_excerpt, /longer version/);
+
 // Without a post root, comments remain comments and are explicitly marked fallback.
 const fallback = policy([comment("3")]);
 assert.equal(fallback.length, 1);

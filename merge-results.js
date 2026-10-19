@@ -276,10 +276,20 @@ function normalizeRows(rows, now) {
 function dedupe(rows) {
   const result = new Map();
   for (const row of rows) {
+    const sourceType = String(row.source_type || "").toLowerCase();
+    const canonicalPost = pilot.canonicalPostUrl(row.post_url || row.content_url || "") || row.post_url || "";
+    const canonicalContent = pilot.canonicalContentUrl(row.content_url || row.comment_url || "") || row.content_url || "";
+    const urlIdentity = sourceType === "post" && canonicalPost
+      ? [row.group_url, "post", canonicalPost].join("|")
+      : ["comment", "reply"].includes(sourceType) && canonicalContent
+        ? [row.group_url, sourceType, canonicalContent].join("|")
+        : "";
     const identity = row.profile_url || `anon:${row.name || "unknown"}`;
-    const key = [row.group_url, identity, row.post_url, row.source_type, pilot.textFingerprint(row.text_excerpt)].join("|");
+    const key = urlIdentity || [row.group_url, identity, canonicalPost, sourceType, pilot.textFingerprint(row.text_excerpt)].join("|");
     const previous = result.get(key);
-    if (!previous || row.text_excerpt.length > previous.text_excerpt.length) result.set(key, row);
+    if (!previous || row.text_excerpt.length > previous.text_excerpt.length) {
+      result.set(key, { ...row, post_url: canonicalPost || row.post_url, content_url: canonicalContent || row.content_url });
+    }
   }
   return [...result.values()].sort((a, b) => (a._date || 0) - (b._date || 0) || a._index - b._index);
 }
