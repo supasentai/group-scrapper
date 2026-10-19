@@ -52,6 +52,25 @@ try {
     "http://127.0.0.1:9224",
     "http://127.0.0.1:9225",
   ]);
+  const profilesFile = path.join(tempDir, "profiles.json");
+  fs.writeFileSync(profilesFile, JSON.stringify({ profiles: [
+    { order: 2, port: 9223 },
+    { order: 1, port: 9222 },
+    { order: 3, port: 9224, enabled: false },
+  ] }), "utf8");
+  const profileFileConfig = batch.parseArgs([
+    "--groups-file", groupsFile,
+    "--profiles-file", profilesFile,
+  ]);
+  assert.deepEqual(batch.configuredCdpEndpoints(profileFileConfig), [
+    "http://127.0.0.1:9222",
+    "http://127.0.0.1:9223",
+  ]);
+  assert.deepEqual(batch.configuredCdpEndpoints({
+    ...profileFileConfig,
+    cdpEndpointsExplicit: true,
+    cdpEndpoints: ["http://127.0.0.1:9226"],
+  }), ["http://127.0.0.1:9226"]);
   const explicitEndpoints = batch.parseArgs([
     "--groups-file", groupsFile,
     "--cdp-endpoints", "http://127.0.0.1:9224,http://127.0.0.1:9225",

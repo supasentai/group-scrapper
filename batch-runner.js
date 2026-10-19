@@ -15,6 +15,7 @@ const DEFAULT_RESULTS_DIR = path.join(__dirname, "results");
 const DEFAULT_RUNNER_PATH = path.join(__dirname, "browser-runner.js");
 const DEFAULT_COLLECTOR_PATH = path.join(__dirname, "fb-group-lead-pilot.js");
 const DEFAULT_CHECKPOINTS_FILE = path.join(__dirname, "checkpoints.json");
+const DEFAULT_PROFILES_FILE = path.join(__dirname, "cdp-profiles.json");
 
 function usage() {
   return [
@@ -35,6 +36,7 @@ function usage() {
     "  --collector-path <path>   Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint",
     "  --cdp-endpoints <urls>     Comma-separated Edge CDP endpoints; rotates on profile_limited/not_member",
+    "  --profiles-file <path>     JSON profile registry used when endpoints are not supplied",
     "  --profile-dir <path>       Dedicated Edge profile directory",
     "  --download-timeout-ms <n>  Download wait timeout",
     "  --post-root-timeout-ms <n> Post-root backfill budget (default 120000)",
@@ -262,6 +264,7 @@ function parseArgs(argv = process.argv.slice(2)) {
   const config = {
     groupsFile: "",
     checkpointsFile: DEFAULT_CHECKPOINTS_FILE,
+    profilesFile: DEFAULT_PROFILES_FILE,
     resumeManifest: "",
     retryStatuses: [],
     resultsDir: DEFAULT_RESULTS_DIR,
@@ -273,6 +276,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     runnerPath: DEFAULT_RUNNER_PATH,
     collectorPath: DEFAULT_COLLECTOR_PATH,
     cdpEndpoint: "http://127.0.0.1:9222",
+    cdpEndpointsExplicit: false,
     cdpEndpoints: [
       "http://127.0.0.1:9222",
       "http://127.0.0.1:9223",
@@ -285,7 +289,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     help: false,
   };
   const valueFlags = new Set([
-    "--groups-file", "--checkpoints-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms",
+    "--groups-file", "--checkpoints-file", "--profiles-file", "--resume-manifest", "--retry-status", "--results-dir", "--days", "--capture-mode", "--max-rounds", "--max-runtime-ms",
     "--child-timeout-ms", "--runner-path", "--collector-path", "--cdp-endpoint", "--cdp-endpoints",
     "--profile-dir", "--download-timeout-ms", "--post-root-timeout-ms",
   ]);
@@ -301,6 +305,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     index += 1;
     if (flag === "--groups-file") config.groupsFile = path.resolve(value);
     else if (flag === "--checkpoints-file") config.checkpointsFile = path.resolve(value);
+    else if (flag === "--profiles-file") config.profilesFile = path.resolve(value);
     else if (flag === "--resume-manifest") config.resumeManifest = path.resolve(value);
     else if (flag === "--retry-status") config.retryStatuses = [...new Set([...config.retryStatuses, ...parseRetryStatuses(value)])];
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
@@ -317,6 +322,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--cdp-endpoint") {
       config.cdpEndpoint = browserRunner.validateCdpEndpoint(value);
       config.cdpEndpoints = [config.cdpEndpoint];
+      config.cdpEndpointsExplicit = true;
     }
     else if (flag === "--cdp-endpoints") {
       const endpoints = [...new Set(String(value).split(",").map((endpoint) => endpoint.trim()).filter(Boolean))]
@@ -324,6 +330,7 @@ function parseArgs(argv = process.argv.slice(2)) {
       if (!endpoints.length) throw new Error("--cdp-endpoints requires at least one endpoint");
       config.cdpEndpoints = endpoints;
       config.cdpEndpoint = endpoints[0];
+      config.cdpEndpointsExplicit = true;
     }
     else if (flag === "--profile-dir") config.profileDir = path.resolve(value);
     else if (flag === "--download-timeout-ms") config.downloadTimeoutMs = parsePositiveInteger(value, flag);
@@ -675,9 +682,25 @@ function batchManifestFilename(batchRunId) {
 }
 
 function configuredCdpEndpoints(config) {
-  const values = Array.isArray(config.cdpEndpoints) && config.cdpEndpoints.length
+  let values = config.cdpEndpointsExplicit === true && Array.isArray(config.cdpEndpoints) && config.cdpEndpoints.length
     ? config.cdpEndpoints
-    : [config.cdpEndpoint];
+    : [];
+  if (!values.length && config.profilesFile) {
+    if (!fs.existsSync(config.profilesFile)) throw new Error(`profiles_file_not_found:${config.profilesFile}`);
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(config.profilesFile, "utf8").replace(/^\uFEFF/, ""));
+    } catch (error) {
+      throw new Error(`profiles_file_invalid:${String(error.message || error)}`);
+    }
+    if (!Array.isArray(manifest?.profiles)) throw new Error("profiles_file_profiles_invalid");
+    values = manifest.profiles
+      .filter((profile) => profile && profile.enabled !== false)
+      .sort((a, b) => Number(a.order || a.port || 0) - Number(b.order || b.port || 0))
+      .map((profile) => profile.endpoint || (profile.port ? `http://127.0.0.1:${profile.port}` : ""))
+      .filter(Boolean);
+  }
+  if (!values.length) values = [config.cdpEndpoint];
   return [...new Set(values.map((endpoint) => browserRunner.validateCdpEndpoint(endpoint)))];
 }
 
@@ -809,7 +832,13 @@ function runBatch(config, dependencies = {}) {
     resume_manifest_path: resumeManifest ? path.resolve(config.resumeManifest) : null,
     resume_input_hash_match: resumeManifest ? resumeManifest.input_hash === sha256(inputBuffer) : null,
     retry_statuses: config.retryStatuses || [],
+    profiles_file: config.profilesFile || null,
     cdp_endpoints: endpoints,
+    profile_rotation: {
+      mode: "round_robin_per_group",
+      switch_after: ["profile_limited", "not_member"],
+      disabled_endpoints: [...disabledProfiles],
+    },
     runner_timeout_ms: runnerTimeoutMs(config),
     groups,
     counts,
@@ -842,6 +871,7 @@ if (require.main === module) process.exitCode = main();
 module.exports = {
   batchManifestFilename,
   countStatuses,
+  configuredCdpEndpoints,
   invokeBrowserRunner,
   makeRunnerArgs,
   normalizeOutcome,
