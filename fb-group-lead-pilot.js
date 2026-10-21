@@ -1069,6 +1069,16 @@
     const records = [];
     const currentGroupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
     const rootArticles = getTopLevelArticles();
+    const captureMetrics = interactionState.captureMetrics || (interactionState.captureMetrics = {
+      root_article_observations: 0,
+      roots_with_post_url: 0,
+      roots_without_post_url: 0,
+      roots_rejected_group_mismatch: 0,
+      permalink_recovery_attempts: 0,
+      empty_text_articles: 0,
+      records_emitted: 0,
+    });
+    captureMetrics.root_article_observations += rootArticles.length;
     for (const [rootIndex, initialRootArticle] of rootArticles.entries()) {
       let rootArticle = initialRootArticle;
       let rootLinkValues = articleLinkValues(rootArticle);
@@ -1083,6 +1093,7 @@
         || (interactionState.permalinkInteractionAttempts = new WeakSet());
       if (!postUrl && !attemptedContainers.has(rootArticle)) {
         attemptedContainers.add(rootArticle);
+        captureMetrics.permalink_recovery_attempts += 1;
         recoveredPostUrl = await resolvePostUrlByInteraction(rootArticle, currentGroupUrl);
         postUrl = recoveredPostUrl;
         // A trusted CDP click may restore the feed and replace the original
@@ -1097,7 +1108,15 @@
         postUrl = extractPostUrlFromValue(postLinkValue || fallbackLinkValue, currentGroupUrl) || recoveredPostUrl;
       }
       const trustedRecoveredPost = Boolean(recoveredPostUrl && postUrl === recoveredPostUrl);
-      if (!postUrl || (!isPostInGroup(postUrl, currentGroupUrl) && !trustedRecoveredPost)) continue;
+      if (!postUrl) {
+        captureMetrics.roots_without_post_url += 1;
+        continue;
+      }
+      captureMetrics.roots_with_post_url += 1;
+      if (!isPostInGroup(postUrl, currentGroupUrl) && !trustedRecoveredPost) {
+        captureMetrics.roots_rejected_group_mismatch += 1;
+        continue;
+      }
       const rootHasOwnPostLink = Boolean(postLinkValue || recoveredPostUrl);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
@@ -1113,7 +1132,10 @@
         const timeText = findTimeText(article, postUrl);
         const rawText = getOwnArticleText(article);
         const text = cleanSourceText(rawText, author.name, timeText);
-        if (!text) continue;
+        if (!text) {
+          captureMetrics.empty_text_articles += 1;
+          continue;
+        }
 
         const sourceType = inferSourceType(isPost, contentLink.sourceType, articleDepth);
         // A comment/reply without its own permalink must never inherit the
@@ -1142,6 +1164,7 @@
           data_quality_flags: qualityFlags.join("; "),
           text,
         });
+        captureMetrics.records_emitted += 1;
       }
     }
     return records;
@@ -1548,7 +1571,18 @@
     const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
-    const interactionState = { permalinkInteractionAttempts: new WeakSet() };
+    const interactionState = {
+      permalinkInteractionAttempts: new WeakSet(),
+      captureMetrics: {
+        root_article_observations: 0,
+        roots_with_post_url: 0,
+        roots_without_post_url: 0,
+        roots_rejected_group_mismatch: 0,
+        permalink_recovery_attempts: 0,
+        empty_text_articles: 0,
+        records_emitted: 0,
+      },
+    };
     const groupContext = getGroupContext(options.groupName);
     const groupUrl = groupContext.groupUrl || canonicalGroupUrl(location.href);
     const scanStartedAt = new Date();
@@ -1650,6 +1684,7 @@
     for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
     const filteredRecords = filterRecordsSince([...records.values()], cutoff, scanStartedAt);
     const capturedRows = captureRecords(filteredRecords, groupContext);
+    feedMetrics.capture = interactionState.captureMetrics;
     const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
       && CONFIG.deferClassification === false;
     const classified = shouldClassify ? classifyRecords(capturedRows, groupContext) : [];
