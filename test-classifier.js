@@ -169,6 +169,10 @@ assert.equal(
   pilot.canonicalPostUrl("https://www.facebook.com/permalink.php?story_fbid=456&id=123"),
   "https://www.facebook.com/groups/123/posts/456/",
 );
+assert.equal(
+  pilot.extractPostUrlFromValue('{"top_level_post_id":"456789"}', "https://www.facebook.com/groups/123/"),
+  "https://www.facebook.com/groups/123/posts/456789/",
+);
 assert.deepEqual(pilot.inferAuthorFromText("SunnyKangaroo8613 I had my facelift yesterday"), {
   name: "SunnyKangaroo8613",
   isAnonymous: true,

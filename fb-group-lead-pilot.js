@@ -299,6 +299,35 @@
     }
   }
 
+  function extractPostUrlFromValue(rawValue, groupUrl = "") {
+    const value = String(rawValue || "").trim();
+    if (!value) return "";
+    const direct = canonicalPostUrl(value);
+    if (direct) return direct;
+
+    // Some feed variants keep the post identity in data-ft/data-href rather
+    // than exposing a normal /posts/<id> anchor.
+    const postIdMatch = value.match(/(?:top_level_post_id|story_fbid|post_id)\s*["':=]+\s*["']?(\d{5,})/i);
+    if (!postIdMatch) return "";
+    const groupMatch = value.match(/\/groups\/([^/"'?]+)/i)
+      || String(groupUrl || "").match(/\/groups\/([^/"'?]+)/i)
+      || (typeof location !== "undefined" && String(location.pathname || "").match(/\/groups\/([^/]+)/i));
+    if (!groupMatch) return "";
+    return canonicalPostUrl(`https://www.facebook.com/groups/${groupMatch[1]}/posts/${postIdMatch[1]}/`);
+  }
+
+  function articleLinkValues(article) {
+    if (!article) return [];
+    const nodes = [article, ...article.querySelectorAll("a[href], [data-href], [data-permalink], [data-url], [data-ft]")];
+    return [...new Set(nodes.flatMap((node) => [
+      node.getAttribute?.("href"),
+      node.getAttribute?.("data-href"),
+      node.getAttribute?.("data-permalink"),
+      node.getAttribute?.("data-url"),
+      node.getAttribute?.("data-ft"),
+    ]).filter(Boolean))];
+  }
+
   function canonicalGroupUrl(rawUrl) {
     if (!rawUrl) return "";
     try {
@@ -1018,10 +1047,13 @@
     const rootArticles = getTopLevelArticles();
     for (const [rootIndex, initialRootArticle] of rootArticles.entries()) {
       let rootArticle = initialRootArticle;
-      let rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
-      let postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
-      let fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
-      let postUrl = canonicalPostUrl((postLink || fallbackLink)?.href);
+      let rootLinkValues = articleLinkValues(rootArticle);
+      let postLinkValue = rootLinkValues.find((value) => {
+        const url = extractPostUrlFromValue(value, currentGroupUrl);
+        return url && !/(?:comment_id|reply_comment_id)=/i.test(value);
+      });
+      let fallbackLinkValue = rootLinkValues.find((value) => extractPostUrlFromValue(value, currentGroupUrl));
+      let postUrl = extractPostUrlFromValue(postLinkValue || fallbackLinkValue, currentGroupUrl);
       let recoveredPostUrl = "";
       const attemptedContainers = interactionState.permalinkInteractionAttempts
         || (interactionState.permalinkInteractionAttempts = new WeakSet());
@@ -1032,14 +1064,17 @@
         // A trusted CDP click may restore the feed and replace the original
         // card node. Re-read that card before extracting author/time/text.
         rootArticle = getTopLevelArticles()[rootIndex] || rootArticle;
-        rootLinks = [...rootArticle.querySelectorAll('a[href*="/posts/"], a[href*="comment_id"], a[href*="reply_comment_id"], a[href*="permalink.php"], a[href*="story_fbid"]')];
-        postLink = rootLinks.find((link) => canonicalPostUrl(link.href) && !/(?:comment_id|reply_comment_id)=/i.test(link.href));
-        fallbackLink = rootLinks.find((link) => canonicalPostUrl(link.href));
-        postUrl = canonicalPostUrl((postLink || fallbackLink)?.href) || recoveredPostUrl;
+        rootLinkValues = articleLinkValues(rootArticle);
+        postLinkValue = rootLinkValues.find((value) => {
+          const url = extractPostUrlFromValue(value, currentGroupUrl);
+          return url && !/(?:comment_id|reply_comment_id)=/i.test(value);
+        });
+        fallbackLinkValue = rootLinkValues.find((value) => extractPostUrlFromValue(value, currentGroupUrl));
+        postUrl = extractPostUrlFromValue(postLinkValue || fallbackLinkValue, currentGroupUrl) || recoveredPostUrl;
       }
       const trustedRecoveredPost = Boolean(recoveredPostUrl && postUrl === recoveredPostUrl);
       if (!postUrl || (!isPostInGroup(postUrl, currentGroupUrl) && !trustedRecoveredPost)) continue;
-      const rootHasOwnPostLink = Boolean(postLink || recoveredPostUrl);
+      const rootHasOwnPostLink = Boolean(postLinkValue || recoveredPostUrl);
 
       const articles = [rootArticle, ...rootArticle.querySelectorAll('div[role="article"]')];
       const uniqueArticles = [...new Set(articles)];
@@ -1698,6 +1733,7 @@
     buildCommentPermalink,
     extractCommentPermalinkFromValue,
     canonicalPostUrl,
+    extractPostUrlFromValue,
     canonicalGroupUrl,
     classifyRecords,
     clearCheckpoint,
