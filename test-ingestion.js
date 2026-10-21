@@ -42,6 +42,22 @@ assert.equal(manifest.started_at, "2026-10-07T12:00:00.000Z");
 assert.equal(manifest.completed_at, "2026-10-07T12:00:01.000Z");
 assert.equal(ingestion.makeManifestFilename(csvFilename), manifestFilename);
 
+const sameUrlDifferentNameRows = pilot.buildCsv([{
+  group_name: "A different Facebook heading",
+  group_url: manifest.group_url,
+  content_url: "https://www.facebook.com/groups/123/posts/1/",
+  name: "Author",
+  profile_url: "https://www.facebook.com/author/",
+  source_type: "post",
+  published_at_text: "2026-10-07T12:00:00.000Z",
+  text_excerpt: "A valid row with the same canonical group URL.",
+}]);
+assert.doesNotThrow(() => ingestion.validateManifest(
+  { ...manifest, rowCount: undefined, row_count: 1, status: "completed", output_file: "fb_group_scan_30d_same-url.csv" },
+  "fb_group_scan_30d_same-url.csv",
+  ingestion.parseScanCsv(Buffer.from(sameUrlDifferentNameRows, "utf8"), "fb_group_scan_30d_same-url.csv"),
+));
+
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "group-scrapper-ingestion-test-"));
 const sourceDir = path.join(fixtureRoot, "Downloads");
 const resultsDir = path.join(fixtureRoot, "results");

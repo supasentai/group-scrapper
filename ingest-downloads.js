@@ -116,10 +116,10 @@ function validateManifest(manifest, csvFilename, rows) {
     const mismatch = rows.find((row) => String(row.group_url || "").trim() !== manifest.group_url);
     if (mismatch) throw new Error("manifest_csv_group_url_mismatch");
   }
-  if (manifest.group_name) {
-    const mismatch = rows.find((row) => row.group_name && String(row.group_name).trim() !== manifest.group_name);
-    if (mismatch) throw new Error("manifest_csv_group_name_mismatch");
-  }
+  // Group names are presentation text and can vary between the checkpoint,
+  // the DOM heading, anonymous-feed context, and individual captured rows.
+  // The canonical group identity is the validated group URL above; do not
+  // reject an otherwise valid CSV because its row labels differ.
 }
 
 function readReport(reportPath) {
