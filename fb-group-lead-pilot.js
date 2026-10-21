@@ -235,6 +235,27 @@
     return /\?|\b(?:has anyone|anyone got|anyone had|looking for|recommend(?:ation)?|quote from|how much|what price)\b/i.test(text);
   }
 
+  function isLikelyTimeFragment(value) {
+    const text = normalizeSpace(value)
+      .replace(/[\u00a0\u200b-\u200d\u2060\ufeff\u034f]/g, "")
+      .replace(/[-_·•]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text || text.length > 100) return false;
+    return Boolean(parseFacebookTime(text))
+      || /^(?:\d+\s*)?(?:m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm)$/i.test(text);
+  }
+
+  function isValidGroupNameCandidate(value) {
+    const text = normalizeSpace(value);
+    return Boolean(text)
+      && !isLikelyUiGroupHeading(text)
+      && !isLikelyMemberCount(text)
+      && !isLikelyPostTitle(text)
+      && !isLikelyTimeFragment(text)
+      && !/^facebook$/i.test(text);
+  }
+
   function escapeRegExp(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -367,14 +388,17 @@
       };
     }
     const groupUrl = canonicalGroupUrl(typeof location !== "undefined" ? location.href : "");
+    const headingNames = [...document.querySelectorAll("h1, [role=\"heading\"][aria-level=\"1\"], [data-pagelet*=\"Group\"] h1")]
+      .map((node) => normalizeSpace(node.textContent))
+      .filter(isValidGroupNameCandidate);
+    const metaName = normalizeSpace(document.querySelector('meta[property="og:title"]')?.getAttribute("content"));
+    const documentTitle = normalizeSpace(String(document.title || "").split("|")[0]);
     const groupLinkNames = [...document.querySelectorAll("a[href]")]
       .filter((link) => isExactGroupLink(link.href || link.getAttribute("href"), groupUrl))
       .map((link) => normalizeSpace(link.getAttribute("aria-label") || link.textContent))
-      .filter((value) => value && !isLikelyUiGroupHeading(value) && !isLikelyMemberCount(value) && !isLikelyPostTitle(value));
-    const headingNames = [...document.querySelectorAll("h1")]
-      .map((node) => normalizeSpace(node.textContent))
-      .filter((value) => value && !isLikelyUiGroupHeading(value) && !isLikelyMemberCount(value) && !isLikelyPostTitle(value));
-    const candidates = [...groupLinkNames, ...headingNames];
+      .filter(isValidGroupNameCandidate);
+    const candidates = [...groupLinkNames, ...headingNames, metaName, documentTitle]
+      .filter(isValidGroupNameCandidate);
     if (candidates[0]) return { groupName: candidates[0], groupUrl, groupNameSource: "dom" };
     return {
       groupName: trustedGroupName,
@@ -1752,6 +1776,7 @@
     isPlaceholderGroupName,
     isLikelyMemberCount,
     isLikelyPostTitle,
+    isLikelyTimeFragment,
     isPostInGroup,
     isExactGroupLink,
     buildRunManifest,

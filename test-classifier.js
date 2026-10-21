@@ -173,6 +173,8 @@ assert.equal(
   pilot.extractPostUrlFromValue('{"top_level_post_id":"456789"}', "https://www.facebook.com/groups/123/"),
   "https://www.facebook.com/groups/123/posts/456789/",
 );
+assert.equal(pilot.isLikelyTimeFragment("---4-h-"), true);
+assert.equal(pilot.isLikelyTimeFragment("Plastic Surgery in Turkey"), false);
 assert.deepEqual(pilot.inferAuthorFromText("SunnyKangaroo8613 I had my facelift yesterday"), {
   name: "SunnyKangaroo8613",
   isAnonymous: true,
