@@ -75,14 +75,22 @@ function detectProfileLimit(input = {}) {
   const topLevelArticlesBefore = Number(feed.topLevelArticlesBefore || 0);
   const topLevelArticlesAfter = Number(feed.topLevelArticlesAfter || 0);
   const loadingSkeletonSeen = feed.loadingSkeletonSeen === true;
-  const noFeedProgress = scrollAttempts >= 3 && progressEvents === 0;
+  const feedHasArticles = topLevelArticlesBefore > 0 || topLevelArticlesAfter > 0;
+  const feedProgressed = progressEvents > 0 || topLevelArticlesAfter > topLevelArticlesBefore;
+  // A visible feed that has already progressed is evidence against a profile
+  // limit. Facebook commonly leaves a loading skeleton in the DOM during a
+  // normal virtualized-feed transition.
+  const noFeedProgress = scrollAttempts >= 3 && progressEvents === 0 && !feedHasArticles;
   const articleCountStalled = topLevelArticlesBefore > 0
     && topLevelArticlesAfter <= topLevelArticlesBefore
-    && scrollAttempts >= 3;
+    && scrollAttempts >= 3
+    && !feedHasArticles;
 
   if (noFeedProgress) evidence.push("feed_no_progress_after_retries");
   if (articleCountStalled) evidence.push("article_count_stalled_after_retries");
-  if (loadingSkeletonSeen) evidence.push("loading_skeleton_seen");
+  if (loadingSkeletonSeen && !feedHasArticles) evidence.push("loading_skeleton_seen");
+  if (feedHasArticles) evidence.push("feed_articles_present");
+  if (feedProgressed) evidence.push("feed_progress_observed");
 
   const independentSoftSignals = [
     Boolean(softText),
@@ -98,7 +106,7 @@ function detectProfileLimit(input = {}) {
     };
   }
 
-  if (noFeedProgress || articleCountStalled || loadingSkeletonSeen) {
+  if (noFeedProgress || articleCountStalled || (loadingSkeletonSeen && !feedHasArticles)) {
     return {
       status: "feed_dom_stalled",
       confidence: "low",

@@ -25,6 +25,18 @@ assert.equal(
   "feed_dom_stalled",
 );
 assert.equal(
+  detectProfileLimit({
+    feed: {
+      scrollAttempts: 4,
+      progressEvents: 2,
+      topLevelArticlesBefore: 5,
+      topLevelArticlesAfter: 9,
+      loadingSkeletonSeen: true,
+    },
+  }).status,
+  "healthy",
+);
+assert.equal(
   detectProfileLimit({ networkError: "connect ECONNRESET" }).status,
   "network_or_cdp_error",
 );
