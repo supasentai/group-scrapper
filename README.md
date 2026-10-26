@@ -197,7 +197,7 @@ node .\aggregate-results.js `
   --classify
 ```
 
-Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Mặc định kết quả raw-preserving gồm `fb_group_aggregate_all` và report; các row unresolved-time vẫn nằm trong `all` và được đếm riêng. Thêm `--classify` để tạo thêm `classified`, `leads` và `audit` từ phần date-qualified mà không thay đổi `all`. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách.
+Aggregator chỉ đọc cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra group, tên file, schema và `row_count`, bỏ qua zero-result khỏi master nhưng vẫn ghi trong report. Pipeline tạo ba tầng rõ ràng: `fb_group_aggregate_all` là raw aggregate không lọc; `fb_group_aggregate_deduped` áp dụng checkpoint/time-window và technical dedup; `fb_group_aggregate_backfilled` áp dụng backfill/post-root policy sau dedup. `posts` và `comments_context` được tách từ tầng deduped nên comment không biến mất khỏi audit; backfilled chỉ là handoff post-level và giữ comment fallback khi không có post root hợp lệ. Thêm `--classify` để tạo `classified`, `leads` và `audit` từ tầng backfilled mà không thay đổi raw `all`. Các run thiếu artifact, stopped hoặc không hợp lệ được ghi là pending/lỗi; không tự quét hoặc tự đưa run cũ/repaired/smoke vào danh sách.
 
 ### Batch Reliability Phase 4
 

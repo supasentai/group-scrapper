@@ -123,7 +123,7 @@ node .\aggregate-results.js `
   --extra-run-id scan_3d_1791368600975
 ```
 
-Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi dùng lại `merge-results.js` để normalize/dedupe. Mặc định completed runs hợp lệ được đưa đầy đủ vào `all`, kể cả row unresolved-time; dùng `--classify` mới tạo thêm `classified/leads/audit` từ date-qualified rows, không lọc thay đổi `all`. `zero_result` không tạo row trong master nhưng vẫn được tính; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
+Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi tạo ba tầng đầu ra: `fb_group_aggregate_all` giữ nguyên mọi dòng raw; `fb_group_aggregate_deduped` áp dụng checkpoint/time-window và technical dedup; `fb_group_aggregate_backfilled` áp dụng post-root/backfill policy sau dedup, mỗi post root một dòng và comment fallback khi không có root hợp lệ. `posts`/`comments_context` được tách từ tầng deduped, không dùng để ghi đè raw. Dùng `--classify` mới tạo thêm `classified/leads/audit` từ tầng backfilled, không thay đổi `all`. `zero_result` không tạo row trong master nhưng vẫn được tính; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
 
 ### Batch Reliability Phase 4
 
