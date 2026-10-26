@@ -108,7 +108,9 @@ try {
   });
   assert.deepEqual(report.temporal_policy, aggregate.TEMPORAL_POLICY);
 
-  const finalRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
+  const rawRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
+  assert.equal(rawRows.length, 8);
+  const finalRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.backfilled, "utf8"));
   const quarantineRows = mergeResults.parseCsv(fs.readFileSync(report.outputs.unresolved, "utf8"));
   assert.equal(finalRows.length, 4);
   assert.equal(quarantineRows.length, 2);

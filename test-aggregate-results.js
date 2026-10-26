@@ -125,7 +125,9 @@ try {
   assert.equal(report.released_groups.length, 3);
   assert.equal(report.pending_groups.length, 3);
   for (const output of Object.values(report.outputs)) assert.equal(fs.existsSync(output), true);
-  const masterRows = require("./merge-results.js").parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
+  const rawRows = require("./merge-results.js").parseCsv(fs.readFileSync(report.outputs.all, "utf8"));
+  assert.equal(rawRows.length, 4);
+  const masterRows = require("./merge-results.js").parseCsv(fs.readFileSync(report.outputs.backfilled, "utf8"));
   assert.equal(masterRows.length, 2);
   assert.ok(masterRows.every((row) => ["Alpha Group", "Extra Group"].includes(row.group_name)));
   assert.equal(masterRows.some((row) => row.published_at_text === "time unavailable"), false);
@@ -147,7 +149,7 @@ try {
   assert.equal(fs.existsSync(classifiedReport.outputs.classified), true);
   assert.equal(fs.existsSync(classifiedReport.outputs.leads), true);
   assert.equal(fs.existsSync(classifiedReport.outputs.audit), true);
-  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.all, "utf8")).length, 2);
+  assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.backfilled, "utf8")).length, 2);
   assert.equal(require("./merge-results.js").parseCsv(fs.readFileSync(classifiedReport.outputs.classified, "utf8")).length, 2);
 
   writeRun("run-rerun", "Stopped Group", "https://www.facebook.com/groups/stopped/", "completed", [{
@@ -234,7 +236,9 @@ try {
     "--results-dir", resultsDir,
   ]), { now: new Date("2026-10-07T12:00:00.000Z") });
   assert.equal(manifestFailureReport.status, "completed");
-  const manifestFailureRows = require("./merge-results.js").parseCsv(fs.readFileSync(manifestFailureReport.outputs.all, "utf8"));
+  const manifestFailureRawRows = require("./merge-results.js").parseCsv(fs.readFileSync(manifestFailureReport.outputs.all, "utf8"));
+  assert.equal(manifestFailureRawRows.length, 2);
+  const manifestFailureRows = require("./merge-results.js").parseCsv(fs.readFileSync(manifestFailureReport.outputs.backfilled, "utf8"));
   assert.equal(manifestFailureRows.length, 1);
   assert.equal(manifestFailureRows[0].source_type, "comment");
   assert.match(manifestFailureRows[0].data_quality_flags, /post_root_backfill_failed/);

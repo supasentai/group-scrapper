@@ -468,28 +468,35 @@ function main() {
   if (!sourceFiles.length) throw new Error(`Không tìm thấy file scan/lead/audit trong ${dir}`);
 
   const raw = sourceFiles.flatMap((name) => parseCsv(fs.readFileSync(path.join(dir, name), "utf8")));
-  const normalized = dedupe(normalizeRows(raw, now));
-  const policyRows = applyPostOnlyPolicy(normalized);
-  const dateQualified = policyRows.filter((row) => row._date && row._date >= cutoff);
-  const unresolved = policyRows.filter((row) => !row._date);
-  const old = policyRows.filter((row) => row._date && row._date < cutoff);
-  // Raw/all retains unresolved-time rows for QA. Only explicitly classified
-  // outputs use the date-qualified subset.
-  const all = policyRows
+  const normalized = normalizeRows(raw, now);
+  const deduped = dedupe(normalized);
+  const backfilled = applyPostOnlyPolicy(deduped);
+  const dateQualified = backfilled.filter((row) => row._date && row._date >= cutoff);
+  const unresolved = backfilled.filter((row) => !row._date);
+  const old = backfilled.filter((row) => row._date && row._date < cutoff);
+  // Keep all collector rows in `all`. Derived outputs apply the time window,
+  // deduplication, and post-root/backfill policy without overwriting raw.
+  const all = raw.map((row) => ({ ...row }));
+  const dedupedOutput = deduped.map(({ _date, _index, ...row }) => row);
+  const backfilledOutput = backfilled
     .filter((row) => !row._date || row._date >= cutoff)
     .map(({ _date, _index, ...row }) => row);
   const classified = classify ? classificationOutputs(dateQualified.map(({ _date, _index, ...row }) => row)) : null;
   const stamp = now.toISOString().slice(0, 10).replaceAll("-", "");
   const outputs = {
     all: path.join(dir, `fb_group_${days}d_repaired_all_${stamp}_utf8.csv`),
+    deduped: path.join(dir, `fb_group_${days}d_deduped_${stamp}_utf8.csv`),
+    backfilled: path.join(dir, `fb_group_${days}d_backfilled_${stamp}_utf8.csv`),
     posts: path.join(dir, `fb_group_${days}d_posts_${stamp}_utf8.csv`),
     comments: path.join(dir, `fb_group_${days}d_comments_context_${stamp}_utf8.csv`),
     unresolved: path.join(dir, `fb_group_${days}d_unresolved_context_${stamp}_utf8.csv`),
   };
   writeCsv(outputs.all, all);
-  writeCsv(outputs.posts, all.filter((row) => row.source_type === "post"));
-  writeCsv(outputs.comments, all.filter((row) => ["comment", "reply"].includes(row.source_type)));
-  writeCsv(outputs.unresolved, all.filter((row) => row.source_type === "unresolved"));
+  writeCsv(outputs.deduped, dedupedOutput);
+  writeCsv(outputs.backfilled, backfilledOutput);
+  writeCsv(outputs.posts, dedupedOutput.filter((row) => row.source_type === "post"));
+  writeCsv(outputs.comments, dedupedOutput.filter((row) => ["comment", "reply"].includes(row.source_type)));
+  writeCsv(outputs.unresolved, unresolved.map(({ _date, _index, ...row }) => row));
   if (classified) {
     outputs.classified = path.join(dir, `fb_group_${days}d_classified_${stamp}_utf8.csv`);
     outputs.leads = path.join(dir, `fb_group_${days}d_repaired_leads_${stamp}_utf8.csv`);
@@ -499,20 +506,22 @@ function main() {
     writeCsv(outputs.audit, classified.audit);
   }
   const sourceTypeCounts = {};
-  for (const row of all) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
+  for (const row of backfilledOutput) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
   const qualityFlagCounts = {};
-  for (const row of all) {
+  for (const row of backfilledOutput) {
     for (const flag of String(row.data_quality_flags || "").split(";").map((value) => value.trim()).filter(Boolean)) {
       qualityFlagCounts[flag] = (qualityFlagCounts[flag] || 0) + 1;
     }
   }
-  const qualityFlags = qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, all.length);
+  const qualityFlags = qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, backfilledOutput.length);
   const report = {
     source_files: sourceFiles,
     raw_rows: raw.length,
-    deduped_rows: normalized.length,
-    in_window_rows: all.length,
+    deduped_rows: deduped.length,
+    in_window_rows: backfilledOutput.length,
     date_qualified_rows: dateQualified.length,
+    backfilled_rows: backfilledOutput.length,
+    raw_output_rows: all.length,
     classification_mode: classify ? "explicit" : "raw",
     lead_rows: classified ? classified.leads.length : null,
     audit_rows: classified ? classified.audit.length : null,
@@ -521,8 +530,8 @@ function main() {
     source_type_counts: sourceTypeCounts,
     quality_flags: qualityFlags,
     quality_flag_counts: qualityFlagCounts,
-    anonymous_rows: all.filter((row) => row.is_anonymous === "yes").length,
-    missing_profile_rows: all.filter((row) => !row.profile_url && row.is_anonymous !== "yes").length,
+    anonymous_rows: backfilledOutput.filter((row) => row.is_anonymous === "yes").length,
+    missing_profile_rows: backfilledOutput.filter((row) => !row.profile_url && row.is_anonymous !== "yes").length,
     outputs,
   };
   fs.writeFileSync(path.join(dir, `quality_report_${stamp}.json`), `${JSON.stringify(report, null, 2)}\n`, "utf8");

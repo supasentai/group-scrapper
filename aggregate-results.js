@@ -567,24 +567,31 @@ function runAggregate(config, dependencies = {}) {
   }
 
   const normalized = mergeResults.normalizeRows(rawRows, now);
+  // Keep the collector payload separate from every derived view. The raw
+  // aggregate is an evidence artifact: it must not be changed by temporal
+  // filtering, deduplication, or the post-only handoff policy.
+  const rawAll = rawRows.map((row) => ({ ...row }));
+
   // The temporal boundary is per group: a checkpoint is authoritative for
-  // that group; otherwise use the fixed 30-day fallback. Unknown timestamps
-  // are retained only as quarantine/raw evidence and never enter final rows.
+  // that group; otherwise use the fixed 30-day fallback. These derived rows
+  // are used for dedup/backfill/handoff outputs only; rawAll remains intact.
   const temporal = applyTemporalGate(normalized, batchManifest.groups, now);
   const deduped = mergeResults.dedupe(temporal.eligible);
-  const policyRows = mergeResults.applyPostOnlyPolicy(deduped, { postRootFailures });
-  const dateQualified = policyRows;
+  const backfilled = mergeResults.applyPostOnlyPolicy(deduped, { postRootFailures });
+  const dateQualified = backfilled;
   const unresolved = temporal.unknown;
   const old = temporal.old;
-  const all = policyRows.map(({ _date, _index, ...row }) => row);
+  const dedupedOutput = deduped.map(({ _date, _index, ...row }) => row);
+  const backfilledOutput = backfilled.map(({ _date, _index, ...row }) => row);
+  const all = rawAll;
   const quarantine = unresolved.map(({ _date, _index, ...row }) => row);
   const classified = config.classify
     ? mergeResults.classificationOutputs(dateQualified.map(({ _date, _index, ...row }) => row))
     : null;
   const sourceTypeCounts = {};
-  for (const row of all) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
+  for (const row of backfilledOutput) sourceTypeCounts[row.source_type] = (sourceTypeCounts[row.source_type] || 0) + 1;
   const qualityFlagCounts = {};
-  for (const row of all) {
+  for (const row of backfilledOutput) {
     for (const flag of String(row.data_quality_flags || "").split(";").map((value) => value.trim()).filter(Boolean)) {
       qualityFlagCounts[flag] = (qualityFlagCounts[flag] || 0) + 1;
     }
@@ -592,6 +599,8 @@ function runAggregate(config, dependencies = {}) {
   const stamp = now.toISOString().replace(/[-:.]/g, "");
   const outputs = {
     all: path.join(resultsDir, `fb_group_aggregate_all_${stamp}_utf8.csv`),
+    deduped: path.join(resultsDir, `fb_group_aggregate_deduped_${stamp}_utf8.csv`),
+    backfilled: path.join(resultsDir, `fb_group_aggregate_backfilled_${stamp}_utf8.csv`),
     posts: path.join(resultsDir, `fb_group_aggregate_posts_${stamp}_utf8.csv`),
     comments: path.join(resultsDir, `fb_group_aggregate_comments_context_${stamp}_utf8.csv`),
     unresolved: path.join(resultsDir, `fb_group_aggregate_unresolved_context_${stamp}_utf8.csv`),
@@ -630,8 +639,10 @@ function runAggregate(config, dependencies = {}) {
     pending_groups: pendingGroups,
     raw_rows: rawRows.length,
     deduped_rows: deduped.length,
-    in_window_rows: all.length,
-    date_qualified_rows: dateQualified.length,
+    in_window_rows: dedupedOutput.length,
+    date_qualified_rows: backfilledOutput.length,
+    backfilled_rows: backfilledOutput.length,
+    raw_output_rows: rawAll.length,
     classification_mode: config.classify ? "explicit" : "raw",
     lead_rows: classified ? classified.leads.length : null,
     audit_rows: classified ? classified.audit.length : null,
@@ -645,17 +656,19 @@ function runAggregate(config, dependencies = {}) {
     },
     temporal_boundaries: temporal.boundaries,
     source_type_counts: sourceTypeCounts,
-    quality_flags: mergeResults.qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, all.length),
+    quality_flags: mergeResults.qualityFlagsForReport(sourceTypeCounts, qualityFlagCounts, backfilledOutput.length),
     quality_flag_counts: qualityFlagCounts,
-    anonymous_rows: all.filter((row) => row.is_anonymous === "yes").length,
-    missing_profile_rows: all.filter((row) => !row.profile_url && row.is_anonymous !== "yes").length,
+    anonymous_rows: backfilledOutput.filter((row) => row.is_anonymous === "yes").length,
+    missing_profile_rows: backfilledOutput.filter((row) => !row.profile_url && row.is_anonymous !== "yes").length,
     source_run_ids: sourceRunIds,
     artifact_issues: artifactIssues,
     outputs,
   };
   mergeResults.writeCsv(outputs.all, all);
-  mergeResults.writeCsv(outputs.posts, all.filter((row) => row.source_type === "post"));
-  mergeResults.writeCsv(outputs.comments, all.filter((row) => ["comment", "reply"].includes(row.source_type)));
+  mergeResults.writeCsv(outputs.deduped, dedupedOutput);
+  mergeResults.writeCsv(outputs.backfilled, backfilledOutput);
+  mergeResults.writeCsv(outputs.posts, dedupedOutput.filter((row) => row.source_type === "post"));
+  mergeResults.writeCsv(outputs.comments, dedupedOutput.filter((row) => ["comment", "reply"].includes(row.source_type)));
   // This output is the retained quarantine for rows whose timestamp could
   // not be proven. It is deliberately separate from the final handoff.
   mergeResults.writeCsv(outputs.unresolved, quarantine);
@@ -674,7 +687,12 @@ function runAggregate(config, dependencies = {}) {
     rows: {
       raw: report.raw_rows,
       deduped: report.deduped_rows,
-      final: report.in_window_rows,
+      in_window: report.in_window_rows,
+      backfilled: report.backfilled_rows,
+      // Backward-compatible alias for consumers that called the handoff
+      // projection "final" before raw/deduped/backfilled became explicit.
+      final: report.backfilled_rows,
+      raw_output: report.raw_output_rows,
       dropped_before_boundary: report.dropped_old_rows,
       quarantined_unknown_time: report.quarantined_time_rows,
     },
@@ -696,7 +714,10 @@ function runAggregate(config, dependencies = {}) {
     pending_groups: report.pending_groups,
     artifact_issues: report.artifact_issues,
     outputs: {
-      final: outputs.all,
+      final: outputs.backfilled,
+      raw: outputs.all,
+      deduped: outputs.deduped,
+      backfilled: outputs.backfilled,
       raw_archive: path.join(resultsDir, "raw"),
       quality_report: outputs.quality_report,
     },
@@ -713,8 +734,14 @@ function runAggregate(config, dependencies = {}) {
     try {
       report.cleanup = cleanupResults(resultsDir, {
         sourceRunIds,
-        finalOutputPath: outputs.all,
-        protectedPaths: [batchManifestPath, outputs.quality_report],
+        finalOutputPath: outputs.backfilled,
+        protectedPaths: [
+          batchManifestPath,
+          outputs.quality_report,
+          outputs.all,
+          outputs.deduped,
+          outputs.backfilled,
+        ],
       });
     } catch (error) {
       report.status = "completed_with_cleanup_error";
