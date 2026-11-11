@@ -12,7 +12,7 @@ Orchestrator
   └── Classifier Evaluator
 ```
 
-Orchestrator là đầu mối duy nhất giao việc, nhận kết quả, chuyển handoff giữa các agent và báo cáo cho người dùng. Các agent không tự ý sửa chồng file hoặc tự push GitHub.
+Orchestrator là đầu mối giao việc, nhận kết quả và báo cáo cho người dùng. Riêng Collector được người dùng cho phép tự bàn giao batch đã kiểm tra sang Aggregate theo mục bên dưới. Các agent không tự ý sửa chồng file hoặc tự push GitHub.
 
 ## Vai trò và phạm vi
 
@@ -98,7 +98,7 @@ Manifest có `status=zero_result` khi lượt chạy không có dòng; `status=c
 
 ### Browser Runner Phase 1
 
-Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Trước khi chạy, người dùng phải mở và kiểm tra phiên CDP bằng `Invoke-RestMethod http://127.0.0.1:<port>/json/version`; quy ước hiện tại hỗ trợ các cổng 9222, 9223, 9224 và 9225, mỗi cổng dùng một `user-data-dir` riêng theo `cdp-profiles.json`. Chỉ khi endpoint trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl` mới được bắt đầu batch. Batch nhận danh sách endpoint qua `--cdp-endpoints` và tự thử vòng tròn 9222 → 9223 → 9224 → 9225. Người dùng đăng nhập thủ công một lần trong 4 profile, sau đó runner mới mở group root, đọc `checkpoints.json` và inject map vào `window.__FB_GROUP_CHECKPOINTS__` trước collector. Runner kiểm tra limit và quyền truy cập group trước collector; hard/soft limit trả `profile_limited`, còn chưa được duyệt vào group trả `not_member`. `profile_limited` vô hiệu hóa profile cho phần còn lại của batch; `not_member` chỉ vô hiệu hóa cặp profile/group hiện tại. Chỉ lượt tự nhiên có `checkpoint_saved=true` mới cập nhật checkpoint và `last_run` atomically; stopped/no-records/profile-limited/not-member/no-available-profile giữ nguyên checkpoint. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint; page do runner tạo được giữ mở để người dùng xử lý. Sau completion, zero-result, stopped hoặc lỗi an toàn, runner chỉ đóng page/tab do chính nó tạo, không đóng browser Edge hay các tab khác. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
+Runner tùy chọn `browser-runner.js` kết nối Edge qua CDP bằng profile riêng. Trước khi chạy, người dùng phải mở và kiểm tra phiên CDP bằng `Invoke-RestMethod http://127.0.0.1:<port>/json/version`; quy ước hiện tại hỗ trợ hai cổng 9222 và 9223, mỗi cổng dùng một `user-data-dir` riêng theo `cdp-profiles.json`. Chỉ khi endpoint trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl` mới được bắt đầu batch. Batch nhận danh sách endpoint qua `--cdp-endpoints` và tự thử vòng tròn 9222 → 9223 → 9222. Người dùng đăng nhập thủ công một lần trong 2 profile, sau đó runner mới mở group root, đọc `checkpoints.json` và inject map vào `window.__FB_GROUP_CHECKPOINTS__` trước collector. Runner kiểm tra limit và quyền truy cập group trước collector; hard/soft limit trả `profile_limited`, còn chưa được duyệt vào group trả `not_member`. `profile_limited` vô hiệu hóa profile cho phần còn lại của batch; `not_member` chỉ vô hiệu hóa cặp profile/group hiện tại. Runner đối chiếu kết quả và manifest, chỉ ghi checkpoint và `last_run` atomically sau lượt tự nhiên có record, boundary xác minh và checkpoint đầu vào không đổi; chỉ báo `checkpoint_saved=true` sau khi ghi file thành công. Lỗi `localStorage` được ghi thành cảnh báo, không chặn ghi file. Stopped/no-records/boundary chưa xác minh/profile-limited/not-member/no-available-profile hoặc lỗi ghi file giữ nguyên checkpoint; batch đánh dấu lỗi checkpoint là `failed` để retry rõ ràng. Runner không nhập credential/OTP, không xử lý CAPTCHA và trả `needs_user_action` khi gặp login wall/checkpoint; page do runner tạo được giữ mở để người dùng xử lý. Sau completion, zero-result, stopped hoặc lỗi an toàn, runner chỉ đóng page/tab do chính nó tạo, không đóng browser Edge hay các tab khác. Phase 1 chỉ chạy một group, chờ đúng cặp CSV/manifest, ingest idempotent và merge theo `run_id`.
 
 ### Batch Runner Phase 2
 
@@ -124,6 +124,52 @@ node .\aggregate-results.js `
 ```
 
 Chỉ các `run_id` trong batch manifest hoặc được nêu rõ bằng `--extra-run-id` mới được resolve. Aggregator tìm đúng cặp scan CSV/manifest trong `results\<run_id>\raw`, kiểm tra `group_url`, `group_name`, `output_file`, schema và `row_count`, rồi tạo ba tầng đầu ra: `fb_group_aggregate_all` giữ nguyên mọi dòng raw; `fb_group_aggregate_deduped` áp dụng checkpoint/time-window và technical dedup; `fb_group_aggregate_backfilled` áp dụng post-root/backfill policy sau dedup, mỗi post root một dòng và comment fallback khi không có root hợp lệ. `posts`/`comments_context` được tách từ tầng deduped, không dùng để ghi đè raw. Dùng `--classify` mới tạo thêm `classified/leads/audit` từ tầng backfilled, không thay đổi `all`. `zero_result` không tạo row trong master nhưng vẫn được tính; stopped, pending, missing hoặc mismatched artifacts nằm trong pending/issue report. Không đọc repaired outputs, old smoke runs hoặc thư mục ngoài danh sách run IDs.
+
+### Quy trình downstream theo yêu cầu người dùng
+
+Các bước lọc nội dung và formatting chỉ thực hiện khi người dùng yêu cầu riêng;
+handoff tự động chỉ ủy quyền aggregate. Chỉ gộp batch hoặc so trùng với batch
+trước khi người dùng yêu cầu; báo nguy cơ chồng khoảng thời gian nếu có.
+
+1. **Đầu vào và thời gian:** đối soát manifest, hash, từng run được chọn, alias,
+   checkpoint đầu vào và các mốc người dùng yêu cầu; giữ raw và comment context,
+   không cleanup, không browser/network backfill nếu chưa được yêu cầu. Mốc
+   bắt đầu/kết thúc phải ghi rõ có bao gồm hay không; khi cần, mặc định khoảng
+   liên tiếp dùng `[đầu, cuối)`. Không suy đoán timestamp từ nội dung bài. Ghi
+   riêng dòng thiếu thời gian hoặc có khoảng thời gian tương đối giao với mốc;
+   báo số lượng và đường dẫn. Chỉ đưa chúng vào file khi người dùng yêu cầu,
+   đánh dấu chưa xác định và không khẳng định thuộc khoảng; khi tách BEFORE/
+   AFTER, ghi rõ khả năng trùng nếu ghép file. Những group pending không phải
+   zero-result; giữ nguyên bằng chứng về checkpoint runner và checkpoint thủ công.
+2. **Một dòng cho mỗi bài:** sau dedup kỹ thuật từng URL nội dung, đối chiếu
+   toàn bộ post và comment đủ điều kiện theo URL nhóm canonical và URL post
+   gốc canonical. Giữ post gốc hợp lệ nếu có; nếu không có, giữ một comment
+   đại diện mới nhất theo thời gian đáng tin cậy, dùng thứ tự nguồn để phá hòa.
+   Với thời gian không so sánh được, dùng quy tắc ổn định, ghi rõ giới hạn và
+   không tự gán thời gian. Không coi nội dung comment là nội dung post, không
+   đổi `source_type`; giữ toàn bộ comment trong `comments_context` và tạo audit
+   các dòng không được chọn. Nếu không xác định được URL post gốc, giữ riêng
+   để xem lại thay vì gộp dựa trên phỏng đoán. Nếu post chưa rõ thời gian được
+   chọn thay comment có thời gian trong khoảng, đánh dấu thời gian post chưa
+   xác định và lưu liên kết tới comment để không nhầm chứng cứ thời gian.
+3. **Lọc nội dung:** chỉ đánh giá dòng `post`, không dùng nội dung comment để
+   quyết định loại post. Loại các post khen kết quả/trải nghiệm, đang hậu phẫu
+   hoặc hồi phục, đã đặt lịch/sắp làm phẫu thuật, và post mô tả hành động đã
+   xảy ra của bác sĩ người viết theo tiêu chí “my doctor + V-ed”. Giữ comment
+   đại diện qua bước lọc này; chỉ lọc comment khi người dùng yêu cầu rõ. Giữ
+   post thiếu ngữ cảnh, ghi vào danh sách cần xem lại; lưu các dòng loại và lý
+   do. Không tự thêm bộ lọc quảng cáo hay tiêu chí nội dung khác.
+4. **Formatting:** xuất đúng sáu cột `Tên nhóm`, `URL nhóm`, `URL nội dung`,
+   `Tên tài khoản`, `Thời điểm đăng`, `Trích đoạn nội dung`. Dùng một mốc tính
+   thời gian tương đối là thời điểm thực hiện formatting, trừ khi người dùng
+   chỉ định mốc khác. Sắp xếp theo độ tuổi số tăng dần (mới nhất trước), không
+   sắp chữ; nhãn thời gian ước tính phải có thể truy vết. Dòng không xác định
+   thời gian đặt cuối, ghi rõ trạng thái và nhãn gốc nếu có.
+5. **Báo cáo và kiểm tra:** nêu số dòng raw, ngoài khoảng, chưa rõ thời gian,
+   dedup kỹ thuật, post/comment context, trùng theo URL post, post/comment đại
+   diện, loại nội dung và cuối cùng; nêu group zero-result, pending, thiếu URL,
+   backfill thất bại và checkpoint thủ công khi có. Kiểm tra output, hash input,
+   số dòng và URL post duy nhất; cung cấp file kết quả và audit cần thiết.
 
 ### Batch Reliability Phase 4
 
@@ -152,6 +198,49 @@ node .\cycle-runner.js --checkpoints-file .\checkpoints.json --results-dir .\res
 `cycle-runner.js` tuần tự gọi batch và aggregate, ghi `cycle_manifest_<id>.json` với lineage, command/config, timestamps, paths, exit statuses, counts và notification summary. `--dry-run` chỉ lập kế hoạch, không gọi child/browser. Needs-user-action, failed, stopped và pending là actionable/fail-safe; không tự login, bypass CAPTCHA hoặc gửi notification. `monitor-report.js` so sánh report hiện tại với report trước đó và chỉ trả JSON machine-readable gồm `notify`, reasons, nhóm mới, zero-result, failures và quality changes.
 
 ## Format báo cáo handoff
+
+### Automatic Collector-to-Aggregate handoff
+
+Người dùng đã cấp quyền thường trực ngày 03/11/2026 trong chat Orchestrator
+`01a175c0-ecad-7743-9013-476730013b56`: "setup cho collector khi gom data về rồi thì tự động bàn giao cho Aggregate downstream formatting".
+Quyền này thay thế quy ước cũ yêu cầu Collector chờ lệnh bàn giao riêng.
+
+- Đích duy nhất: chat **Aggregate downstream formatting**, host `local`, thread
+  `01a175b3-4470-7571-a7eb-fc766f05f8e3`.
+- Sau khi hoàn tất batch được giao, Collector kiểm tra schema 8 cột, số dòng,
+  hash CSV/manifest, mapping group/alias, selected run duy nhất cho mỗi group,
+  checkpoint đầu vào thực tế và coverage. Chỉ bàn giao batch hoàn chỉnh sau khi
+  tất cả group được giao có trạng thái được đối soát: completed hoặc zero-result
+  đã xác minh. `no_records_seen`, boundary chưa xác minh, stopped, failed hoặc
+  needs-user-action không phải zero-result thành công; giữ checkpoint liên quan
+  và báo người dùng. Chỉ bàn giao partial nếu người dùng đã yêu cầu rõ.
+- Giữ raw bất biến, snapshot checkpoint trước batch và báo cáo validation. Nếu
+  có mốc kết thúc cố định, bàn giao đúng các run bounded đã kiểm tra, kèm quy ước
+  đầu/cuối khoảng thời gian và audit ngoài khoảng/unresolved riêng.
+- Dùng tool `read_thread` đọc trạng thái chat đích rồi
+  `send_message_to_thread` gửi yêu cầu **aggregate batch này**, không cần hỏi lại
+  người dùng. Nội dung phải có đường dẫn tuyệt đối của batch root, complete batch
+  manifest, validation report, checkpoint snapshot; batch ID và SHA-256 manifest;
+  selected run/group count, số dòng post/comment, zero-result, cảnh báo, alias và
+  khung thời gian. Không gửi raw text bài viết trong tin nhắn nếu không cần thiết.
+- Yêu cầu Aggregate chỉ dùng selected runs trong complete manifest, không gộp
+  attempt lỗi/batch cũ; kiểm tra hash/checkpoint/time window; giữ comment context
+  và unresolved riêng; chạy offline với `--no-cleanup` để giữ toàn bộ input.
+  Không tự lọc nội dung, formatting, mở browser/network backfill, sửa source hoặc
+  checkpoint, commit/push. Các bước đó cần yêu cầu riêng của người dùng.
+- Ghi `aggregate_handoff.json` trong batch root sau khi tool xác nhận gửi thành
+  công: batch ID, manifest path/hash, target host/thread, sent_at UTC và tham chiếu
+  phản hồi tool nếu có. Trước khi gửi, đối chiếu receipt và lịch sử chat đích để
+  không bàn giao lại cùng batch/manifest hash. Nếu batch đã được gửi hoặc đã
+  aggregate thì chỉ báo trạng thái hiện có. Manifest thay đổi sau rerun cần chỉ rõ
+  bản mới thay thế bản cũ, tránh merge cả hai.
+- Nếu tool gửi không khả dụng hoặc lỗi, không ghi receipt thành công; lưu trạng
+  thái pending/lỗi và báo người dùng. Nếu kết quả gửi không chắc chắn, kiểm tra
+  lịch sử chat đích trước khi thử lại. Không giả lập bằng sửa database chat hoặc
+  gọi API nội bộ không được hỗ trợ.
+- Báo người dùng "đã bàn giao" sau khi xác nhận gửi; chỉ báo "đã aggregate" khi
+  đã đọc được kết quả hoàn tất từ chat đích. Quy tắc này không tạo lịch chạy batch
+  mới và không tự chạy lại batch lịch sử.
 
 Mỗi agent trả kết quả theo mẫu:
 

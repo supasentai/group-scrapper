@@ -764,23 +764,33 @@ function loadCheckpointMap(filePath, groupUrl) {
 function writeCheckpointDocument(filePath, document) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const next = { ...document, version: document.version || 1, updated_at: new Date().toISOString() };
-  fs.writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, filePath);
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch (_cleanupError) { /* The temporary file may not exist. */ }
+    throw error;
+  }
   return next;
 }
 
 function updateCheckpointManifest({ filePath, groupUrl, groupName, lastRun }) {
   const naturalStatuses = new Set(["completed_with_rows", "zero_result_after_checkpoint"]);
   const recordsSeen = Number(lastRun?.records_seen);
-  if (!lastRun || !naturalStatuses.has(lastRun.run_status) || lastRun.checkpoint_saved !== true
-    || !lastRun.checkpoint || !Number.isFinite(recordsSeen) || recordsSeen <= 0) {
-    return { updated: false, reason: lastRun?.run_status === "stopped" ? "stopped" : "checkpoint_not_saved" };
+  if (!lastRun || !naturalStatuses.has(lastRun.run_status) || lastRun.checkpoint_enabled !== true
+    || lastRun.boundary_verified !== true || !lastRun.checkpoint_candidate
+    || !lastRun.scan_started_at || !lastRun.run_id || !Number.isFinite(recordsSeen) || recordsSeen <= 0) {
+    return { updated: false, reason: lastRun?.run_status === "stopped" ? "stopped" : "checkpoint_not_eligible" };
   }
   const canonicalGroupUrl = validateGroupUrl(groupUrl);
-  const checkpoint = normalizeCheckpoint(lastRun.checkpoint);
+  if (validateGroupUrl(lastRun.group_url) !== canonicalGroupUrl) return { updated: false, reason: "checkpoint_group_mismatch" };
+  const checkpoint = normalizeCheckpoint(lastRun.checkpoint_candidate);
+  if (checkpoint !== normalizeCheckpoint(lastRun.scan_started_at)) return { updated: false, reason: "checkpoint_candidate_mismatch" };
   const document = readCheckpointDocument(filePath);
   const current = document.groups[canonicalGroupUrl] || {};
   const currentCheckpoint = current.checkpoint ? normalizeCheckpoint(current.checkpoint) : null;
+  const previousCheckpoint = lastRun.previous_checkpoint ? normalizeCheckpoint(lastRun.previous_checkpoint) : null;
+  if (currentCheckpoint !== previousCheckpoint) return { updated: false, reason: "checkpoint_changed_during_scan" };
   if (currentCheckpoint && new Date(checkpoint).getTime() <= new Date(currentCheckpoint).getTime()) {
     return { updated: false, reason: "checkpoint_not_new", checkpoint: currentCheckpoint };
   }
@@ -801,13 +811,15 @@ function updateCheckpointManifest({ filePath, groupUrl, groupName, lastRun }) {
     group_name: String(lastRun.group_name || groupName || current.group_name || "").trim(),
     checkpoint,
     last_run: {
-      ...previousLastRun,
       status: lastRun.run_status || lastRun.status || previousLastRun.status || null,
       group_name_source: lastRun.group_name_source || previousLastRun.group_name_source || null,
       scan_started_at: startedAt,
       started_at: startedAt,
       completed_at: completedAt,
       checkpoint_saved: true,
+      boundary_verified: true,
+      local_checkpoint_saved: lastRun.local_checkpoint_saved === true,
+      local_checkpoint_error: lastRun.local_checkpoint_error || null,
       checkpoint,
       run_id: lastRun.run_id || null,
       records_seen: recordsSeen,
@@ -1232,17 +1244,35 @@ async function runBrowser(config, dependencies = {}) {
     const merge = executeCommand(makeMergeCommand({ rawDir, days: config.days }), config.childTimeoutMs);
     files.merge = merge.json || { exitCode: merge.exitCode, stderr: merge.stderr };
     if (merge.exitCode !== 0) throw new Error(`Merge failed${merge.timedOut ? " (timeout)" : ""}: ${merge.stderr || merge.stdout}`);
-    files.last_run = completionResult.lastRun || null;
-    files.checkpoint_update = updateCheckpointManifest({
-      filePath: config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE,
-      groupUrl: config.groupUrl,
-      groupName: config.groupName,
-      lastRun: completionResult.lastRun,
-    });
+    const lastRun = completionResult.lastRun || null;
+    files.last_run = lastRun;
+    const runMatchesManifest = lastRun
+      && lastRun.run_id === manifest.run_id
+      && lastRun.group_url === manifest.group_url
+      && lastRun.scan_started_at === manifest.started_at
+      && Number(lastRun.records_seen) === Number(manifest.records_seen)
+      && lastRun.boundary_verified === true && manifest.boundary_verified === true
+      && ((manifest.status === "completed" && lastRun.run_status === "completed_with_rows")
+        || (manifest.status === "zero_result" && lastRun.run_status === "zero_result_after_checkpoint"));
+    try {
+      files.checkpoint_update = runMatchesManifest
+        ? (dependencies.updateCheckpointManifest || updateCheckpointManifest)({ filePath: config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE,
+          groupUrl: config.groupUrl, groupName: config.groupName, lastRun })
+        : { updated: false, reason: "collector_manifest_mismatch_or_boundary_unverified" };
+    } catch (error) {
+      files.checkpoint_update = { updated: false, reason: "checkpoint_file_write_failed", error: String(error.message || error) };
+    }
+    files.local_checkpoint_warning = lastRun?.local_checkpoint_error || null;
+    if (!files.checkpoint_update.updated) {
+      return { status: "checkpoint_not_saved", run_id: manifest.run_id, files,
+        checkpoint_saved: false, row_count: manifest.row_count, merge_report: merge.json,
+        needs_user_action: null, error: files.checkpoint_update.reason };
+    }
     return {
       status: manifest.status === "zero_result" ? "zero_result" : "completed",
       run_id: manifest.run_id,
       files,
+      checkpoint_saved: true,
       row_count: manifest.row_count,
       merge_report: merge.json,
       needs_user_action: null,

@@ -36,6 +36,8 @@ assert.deepEqual(Object.keys(manifest), [
   "stop_reason",
   "records_seen",
   "boundary_verified",
+  "local_checkpoint_saved",
+  "local_checkpoint_error",
   "feed_metrics",
 ]);
 assert.equal(manifest.started_at, "2026-10-07T12:00:00.000Z");

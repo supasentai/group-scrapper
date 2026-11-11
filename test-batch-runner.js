@@ -49,9 +49,8 @@ try {
   assert.deepEqual(config.cdpEndpoints, [
     "http://127.0.0.1:9222",
     "http://127.0.0.1:9223",
-    "http://127.0.0.1:9224",
-    "http://127.0.0.1:9225",
   ]);
+  assert.deepEqual(batch.configuredCdpEndpoints(config), config.cdpEndpoints);
   const profilesFile = path.join(tempDir, "profiles.json");
   fs.writeFileSync(profilesFile, JSON.stringify({ profiles: [
     { order: 2, port: 9223 },
@@ -87,11 +86,11 @@ try {
     runCalls.push(group.group_url);
     if (group.group_url.endsWith("/alpha/")) {
       const artifacts = writeArtifacts("alpha", group.group_url, "scan_alpha", "completed", 2);
-      return { status: "completed", run_id: "scan_alpha", files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+      return { status: "completed", checkpoint_saved: true, run_id: "scan_alpha", files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
     }
     if (group.group_url.endsWith("/zero/")) {
       const artifacts = writeArtifacts("zero", group.group_url, "scan_zero", "zero_result", 0);
-      return { status: "zero_result", run_id: "scan_zero", files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+      return { status: "zero_result", checkpoint_saved: true, run_id: "scan_zero", files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
     }
     return { status: "needs_user_action", needs_user_action: "Facebook login required" };
   };
@@ -132,6 +131,17 @@ try {
   assert.equal(fs.existsSync(manifest.manifest_path), true);
   assert.equal(batch.normalizeOutcome({ status: "zero_result" }).status, "failed");
   assert.equal(batch.normalizeOutcome({ status: "completed", files: {} }).status, "failed");
+  const unsavedArtifacts = writeArtifacts("unsaved", "https://www.facebook.com/groups/unsaved/", "scan_unsaved", "completed", 1);
+  const unsaved = batch.normalizeOutcome({ status: "checkpoint_not_saved", checkpoint_saved: false,
+    run_id: "scan_unsaved", error: "checkpoint_file_write_failed",
+    files: { manifest: unsavedArtifacts.manifestPath, csv: unsavedArtifacts.csvPath,
+      checkpoint_update: { updated: false, reason: "checkpoint_file_write_failed" },
+      local_checkpoint_warning: "QuotaExceededError" } }, "https://www.facebook.com/groups/unsaved/");
+  assert.equal(unsaved.status, "failed");
+  assert.equal(unsaved.checkpoint_saved, false);
+  assert.equal(unsaved.local_checkpoint_warning, "QuotaExceededError");
+  assert.equal(unsaved.run_id, "scan_unsaved");
+  assert.match(unsaved.error, /checkpoint_not_saved/);
   const profileLimit = batch.normalizeOutcome({
     status: "profile_limited",
     profile_port: 9223,
@@ -174,7 +184,7 @@ try {
   assert.equal(profileManifest.status, "completed_with_profile_gaps");
   assert.equal(afterProfileLimitCalled, false);
   assert.equal(profileManifest.groups[0].status, "no_available_profile");
-  assert.equal(profileManifest.groups[0].profile_attempts.length, 4);
+  assert.equal(profileManifest.groups[0].profile_attempts.length, 2);
   assert.equal(profileManifest.groups[0].checkpoint_saved, false);
   assert.equal(profileManifest.groups[1].status, "not_run");
   assert.equal(profileManifest.groups[1].error, "batch_stopped_after_all_profiles_unavailable");
@@ -209,7 +219,7 @@ try {
       const status = group.group_url.endsWith("/rotation-b/") ? "zero_result" : "completed";
       const rowCount = status === "zero_result" ? 0 : 1;
       const artifacts = writeArtifacts(`rotation-${suffix}-${endpoint.slice(-4)}`, group.group_url, `scan-${suffix}-${endpoint.slice(-4)}`, status, rowCount);
-      return { status, run_id: `scan-${suffix}-${endpoint.slice(-4)}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+      return { status, checkpoint_saved: true, run_id: `scan-${suffix}-${endpoint.slice(-4)}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
     },
   });
   assert.deepEqual(rotationCalls, [
@@ -321,7 +331,7 @@ try {
       resumeCalls.push(group.group_url);
       const suffix = group.group_url.split("/").at(-2);
       const artifacts = writeArtifacts(`resume-${suffix}`, group.group_url, `new-${suffix}`, "completed", 1);
-      return { status: "completed", run_id: `new-${suffix}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
+      return { status: "completed", checkpoint_saved: true, run_id: `new-${suffix}`, files: { manifest: artifacts.manifestPath, csv: artifacts.csvPath } };
     },
   });
   assert.deepEqual(resumeCalls, [

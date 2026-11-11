@@ -63,7 +63,7 @@ Luồng spreadsheet ở trên là legacy/manual. Luồng batch chính đọc `ch
 
 - Lần quét đầu tiên dùng `days` (mặc định 30 ngày).
 - Checkpoint chính được lưu trong `checkpoints.json` ở thư mục dự án; `localStorage` của Edge chỉ còn là cơ chế dự phòng cho các lượt chạy cũ.
-- Batch/browser runner tự inject map checkpoint từ `checkpoints.json` trước khi chạy collector và tự ghi checkpoint cùng `last_run` sau lượt tự nhiên có `checkpoint_saved=true`.
+- Batch/browser runner inject map từ `checkpoints.json` trước khi chạy. Sau lượt hoàn tất tự nhiên, có record và xác minh boundary, runner ghi checkpoint cùng `last_run` vào file; lỗi ghi `localStorage` chỉ là cảnh báo.
 - Lần quét kế tiếp chỉ giữ nội dung có thời gian từ checkpoint đó trở đi. Ví dụ lần trước bắt đầu lúc 09:00 thì lần sau quét từ 09:00 trở đi.
 - Nếu bấm **Dừng & xuất CSV**, checkpoint không được cập nhật để tránh bỏ sót dữ liệu.
 - Nếu trang không trả về bản ghi nào, checkpoint cũng không được cập nhật để tránh tiến mốc khi Facebook chưa tải nội dung hoặc đã thay đổi DOM.
@@ -80,7 +80,7 @@ node .\checkpoint-tools.js export-map
 ```
 
 - Runner inject toàn bộ map checkpoint (kể cả giá trị `null`) vào `window.__FB_GROUP_CHECKPOINTS__`; khi đó file là nguồn chính và checkpoint cũ trong `localStorage` không ghi đè được giá trị từ file.
-- Runner đọc `window.__FB_GROUP_LEAD_PILOT_LAST_RUN__`; chỉ `checkpoint_saved=true` mới tiến checkpoint. `stopped` và `no_records_seen` giữ nguyên mốc cũ.
+- Collector trả candidate cùng trạng thái quét và kết quả lưu dự phòng `local_checkpoint_saved`/`local_checkpoint_error`; runner chỉ báo `checkpoint_saved=true` sau khi ghi file thành công. `stopped`, `no_records_seen`, boundary chưa xác minh, checkpoint đầu vào bị thay đổi hoặc lỗi ghi file giữ nguyên mốc cũ. Batch ghi `failed` với lý do `checkpoint_not_saved` để có thể retry rõ ràng.
 - `last_run` được ghi cùng checkpoint mới để truy vết trạng thái, số record và `run_id`.
 - Đổi profile hoặc xóa dữ liệu site không còn làm mất checkpoint chính trong dự án, nhưng vẫn có thể làm mất fallback `localStorage`.
 
@@ -113,8 +113,6 @@ Trước mỗi lượt chạy, mở các phiên Edge CDP bằng profile riêng. 
 ```powershell
 & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9222"
 & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9223 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9223"
-& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9224 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9224"
-& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9225 --user-data-dir="C:\Users\ADMIN\Documents\ChatGPT\group-scrapper\.cdp-profiles\edge-9225"
 ```
 
 Đăng nhập thủ công vào profile tương ứng, rồi kiểm tra từng cổng:
@@ -122,11 +120,9 @@ Trước mỗi lượt chạy, mở các phiên Edge CDP bằng profile riêng. 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:9222/json/version
 Invoke-RestMethod http://127.0.0.1:9223/json/version
-Invoke-RestMethod http://127.0.0.1:9224/json/version
-Invoke-RestMethod http://127.0.0.1:9225/json/version
 ```
 
-Danh sách 4 profile và thứ tự vòng tròn nằm trong [cdp-profiles.json](C:/Users/ADMIN/Documents/ChatGPT/group-scrapper/cdp-profiles.json). Chỉ bắt đầu batch khi các cổng trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Dùng `--cdp-endpoints` để batch tự thử theo thứ tự 9222 → 9223 → 9224 → 9225 → 9222. `profile_limited` sẽ vô hiệu hóa profile đó cho phần còn lại của batch; `not_member` chỉ bỏ qua cặp profile/group hiện tại. Các trạng thái `network_or_cdp_error` và `feed_dom_stalled` không được coi là Facebook limit; lần lượt kiểm tra kết nối hoặc reload/recheck.
+Danh sách 2 profile và thứ tự vòng tròn nằm trong [cdp-profiles.json](C:/Users/ADMIN/Documents/ChatGPT/group-scrapper/cdp-profiles.json). Chỉ bắt đầu batch khi các cổng trả về `Browser`, `Protocol-Version` và `webSocketDebuggerUrl`. Dùng `--cdp-endpoints` để batch tự thử theo thứ tự 9222 → 9223 → 9222. `profile_limited` sẽ vô hiệu hóa profile đó cho phần còn lại của batch; `not_member` chỉ bỏ qua cặp profile/group hiện tại. Các trạng thái `network_or_cdp_error` và `feed_dom_stalled` không được coi là Facebook limit; lần lượt kiểm tra kết nối hoặc reload/recheck.
 
 Chuẩn bị profile một lần:
 
@@ -172,7 +168,7 @@ Runner mở group root, đọc `checkpoints.json` (hoặc `--checkpoints-file`),
 node .\batch-runner.js `
   --checkpoints-file .\checkpoints.json `
   --results-dir .\results `
-  --cdp-endpoints "http://127.0.0.1:9222,http://127.0.0.1:9223,http://127.0.0.1:9224,http://127.0.0.1:9225" `
+  --cdp-endpoints "http://127.0.0.1:9222,http://127.0.0.1:9223" `
   --days 3 `
   --max-runtime-ms 900000
 ```

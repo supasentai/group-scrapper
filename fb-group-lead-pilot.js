@@ -442,14 +442,19 @@
     }
   }
 
-  function writeCheckpoint(groupUrl, checkpoint) {
-    if (!CONFIG.useCheckpoint || typeof localStorage === "undefined") return false;
+  function writeCheckpointDetailed(groupUrl, checkpoint) {
+    if (!CONFIG.useCheckpoint) return { saved: false, error: "checkpoint_disabled" };
     try {
+      if (typeof localStorage === "undefined") return { saved: false, error: "local_storage_unavailable" };
       localStorage.setItem(checkpointStorageKey(groupUrl), new Date(checkpoint).toISOString());
-      return true;
-    } catch (_error) {
-      return false;
+      return { saved: true, error: null };
+    } catch (error) {
+      return { saved: false, error: error?.name || "local_storage_write_failed" };
     }
+  }
+
+  function writeCheckpoint(groupUrl, checkpoint) {
+    return writeCheckpointDetailed(groupUrl, checkpoint).saved;
   }
 
   function clearCheckpoint(groupUrl) {
@@ -1348,6 +1353,8 @@
     recordsSeen = 0,
     boundaryVerified = false,
     feedMetrics = null,
+    localCheckpointSaved = false,
+    localCheckpointError = null,
   }) {
     return {
       group_url: groupUrl || "",
@@ -1362,6 +1369,8 @@
       stop_reason: stopReason || null,
       records_seen: Number(recordsSeen),
       boundary_verified: Boolean(boundaryVerified),
+      local_checkpoint_saved: Boolean(localCheckpointSaved),
+      local_checkpoint_error: localCheckpointError || null,
       feed_metrics: feedMetrics || null,
     };
   }
@@ -1701,7 +1710,11 @@
     // Không tiến checkpoint nếu trang không trả về bản ghi nào (ví dụ bị
     // login wall, DOM chưa tải hoặc Facebook thay đổi giao diện), để lần sau
     // vẫn quét lại khoảng thời gian chưa chắc đã đọc được.
-    const checkpointSaved = completedNaturally && records.size > 0 && writeCheckpoint(groupUrl, scanStartedAt);
+    const boundaryVerified = oldPostRounds >= CONFIG.maxOldPostRounds;
+    const checkpointEligible = completedNaturally && records.size > 0 && boundaryVerified && CONFIG.useCheckpoint;
+    const localCheckpoint = checkpointEligible
+      ? writeCheckpointDetailed(groupUrl, scanStartedAt)
+      : { saved: false, error: null };
     const runStatus = state.stopped
       ? "stopped"
       : records.size === 0
@@ -1710,13 +1723,15 @@
           ? "zero_result_after_checkpoint"
           : "completed_with_rows";
     hud.update("Đã hoàn tất thu thập.", capturedRows);
-    const checkpointMessage = checkpointSaved
-      ? " Đã lưu checkpoint."
+    const checkpointMessage = localCheckpoint.saved
+      ? " Đã lưu checkpoint dự phòng trong trình duyệt; runner sẽ lưu file chính."
       : state.stopped
         ? ` Chưa cập nhật checkpoint vì đã dừng (${state.stopReason || "stopped"}).`
         : records.size === 0
           ? " Chưa cập nhật checkpoint vì chưa đọc được bản ghi."
-          : " Không có dòng sau khi lọc theo checkpoint.";
+          : !boundaryVerified
+            ? " Chưa cập nhật checkpoint vì chưa xác minh được ranh giới."
+            : " Không lưu được checkpoint dự phòng trong trình duyệt; runner sẽ kiểm tra file chính.";
     const completedAt = new Date();
     const manifestStatus = manifestStatusForRun(runStatus, capturedRows.length);
     const runManifest = buildRunManifest({
@@ -1731,7 +1746,9 @@
       outputFile: scanFilename,
       stopReason: state.stopReason,
       recordsSeen: records.size,
-      boundaryVerified: oldPostRounds >= CONFIG.maxOldPostRounds,
+      boundaryVerified,
+      localCheckpointSaved: localCheckpoint.saved,
+      localCheckpointError: localCheckpoint.error,
       feedMetrics,
     });
     hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
@@ -1743,7 +1760,7 @@
       cutoff,
       scanStartedAt,
       completedAt,
-      checkpoint: checkpointSaved ? scanStartedAt : previousCheckpoint,
+      checkpoint: localCheckpoint.saved ? scanStartedAt : previousCheckpoint,
       runStatus,
       runId,
       manifest: runManifest,
@@ -1761,10 +1778,14 @@
         completed_at: completedAt.toISOString(),
         previous_checkpoint: previousCheckpoint ? previousCheckpoint.toISOString() : null,
         checkpoint: result.checkpoint ? new Date(result.checkpoint).toISOString() : null,
-        checkpoint_saved: checkpointSaved,
+        checkpoint_saved: false,
+        checkpoint_candidate: checkpointEligible ? scanStartedAt.toISOString() : null,
+        checkpoint_enabled: Boolean(CONFIG.useCheckpoint),
+        local_checkpoint_saved: localCheckpoint.saved,
+        local_checkpoint_error: localCheckpoint.error,
         run_status: runStatus,
         stop_reason: state.stopReason || null,
-        boundary_verified: oldPostRounds >= CONFIG.maxOldPostRounds,
+        boundary_verified: boundaryVerified,
         no_record_rounds: noRecordRounds,
         unresolved_timestamp_rounds: unresolvedTimestampRounds,
         run_id: runId,

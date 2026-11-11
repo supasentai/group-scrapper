@@ -54,7 +54,7 @@ function makePage({ url, body }) {
   assert.equal(healthy.action, "continue");
 
   const profiles = JSON.parse(fs.readFileSync("cdp-profiles.json", "utf8"));
-  assert.deepEqual(profiles.profiles.map((profile) => profile.port), [9222, 9223, 9224, 9225]);
+  assert.deepEqual(profiles.profiles.map((profile) => profile.port), [9222, 9223]);
   assert.equal(profiles.one_port_per_batch, true);
   assert.equal(profiles.auto_switch, true);
   assert.deepEqual(profiles.switch_after, ["profile_limited", "not_member"]);

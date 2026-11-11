@@ -62,18 +62,22 @@ function makeConfig(resultsDir, checkpointsFile) {
   };
 }
 
-function writePair(stagingDir, status, rows = []) {
+function writePair(stagingDir, status, rows = [], lastRun = null) {
   const csv = "fb_group_scan_3d_lifecycle.csv";
   const manifest = "fb_group_scan_3d_lifecycle.manifest.json";
   fs.writeFileSync(path.join(stagingDir, csv), pilot.buildCsv(rows), "utf8");
   fs.writeFileSync(path.join(stagingDir, manifest), JSON.stringify({
     run_id: "lifecycle",
+    group_url: "https://www.facebook.com/groups/example/",
+    started_at: lastRun?.scan_started_at || "2026-10-07T00:00:00.000Z",
+    records_seen: lastRun?.records_seen || 0,
+    boundary_verified: lastRun?.boundary_verified === true,
     status,
     row_count: rows.length,
   }), "utf8");
 }
 
-async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null, scanRows = [], backfillCandidate = null } = {}) {
+async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null, scanRows = [], backfillCandidate = null, updateCheckpointManifest = undefined } = {}) {
   const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-runner-lifecycle-"));
   const checkpointsFile = path.join(resultsDir, "checkpoints.json");
   fs.writeFileSync(checkpointsFile, JSON.stringify({
@@ -99,7 +103,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
       playwright: { chromium: { connectOverCDP: async () => browser } },
       detectUserAction: async () => action,
       waitForPair: async ({ stagingDir }) => {
-        writePair(stagingDir, manifestStatus, scanRows);
+        writePair(stagingDir, manifestStatus, scanRows, lastRun);
         return true;
       },
       runCommand: (command) => {
@@ -115,6 +119,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
         }
         return { exitCode: 0, timedOut: false, stdout: "", stderr: "", json: {} };
       },
+      updateCheckpointManifest,
     });
     return { result, page, browser, commands, checkpointDocument: JSON.parse(fs.readFileSync(checkpointsFile, "utf8")) };
   } catch (error) {
@@ -142,10 +147,15 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   const completed = await runCase({
     lastRun: {
       group_name: "Example Group",
-      run_status: "completed_with_rows",
+      group_url: "https://www.facebook.com/groups/example/",
+      run_status: "zero_result_after_checkpoint",
       scan_started_at: "2026-10-07T00:00:00.000Z",
-      checkpoint: "2026-10-07T00:00:00.000Z",
-      checkpoint_saved: true,
+      previous_checkpoint: "2026-10-06T00:00:00.000Z",
+      checkpoint_candidate: "2026-10-07T00:00:00.000Z",
+      checkpoint_enabled: true,
+      boundary_verified: true,
+      local_checkpoint_saved: false,
+      local_checkpoint_error: "QuotaExceededError",
       run_id: "lifecycle",
       records_seen: 1,
       classified_count: 1,
@@ -154,19 +164,70 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
     },
   });
   assert.ifError(completed.error);
-  assert.equal(completed.result.status, "zero_result");
+  assert.equal(completed.result.status, "zero_result", JSON.stringify(completed.result.files.checkpoint_update));
   assert.equal(completed.page.closeCount, 1);
   assert.deepEqual(completed.page.gotoUrls, ["https://www.facebook.com/groups/example/?sorting_setting=CHRONOLOGICAL"]);
   assert.equal(completed.browser.closeCount, 1);
   assert.equal(completed.page.offCount, 1);
   assert.equal(completed.page.injectedCheckpoints["https://www.facebook.com/groups/example/"], "2026-10-06T00:00:00.000Z");
   assert.equal(completed.result.files.checkpoint_update.updated, true);
+  assert.equal(completed.result.checkpoint_saved, true);
+  assert.equal(completed.result.files.local_checkpoint_warning, "QuotaExceededError");
   assert.equal(completed.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-07T00:00:00.000Z");
   const completedLastRun = completed.checkpointDocument.groups["https://www.facebook.com/groups/example/"].last_run;
   assert.equal(completedLastRun.run_id, "lifecycle");
-  assert.equal(completedLastRun.status, "completed_with_rows");
+  assert.equal(completedLastRun.status, "zero_result_after_checkpoint");
+  assert.equal(completedLastRun.local_checkpoint_error, "QuotaExceededError");
   assert.equal(completedLastRun.started_at, "2026-10-07T00:00:00.000Z");
   assert.match(completedLastRun.completed_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+  const fileFailure = await runCase({
+    lastRun: {
+      group_url: "https://www.facebook.com/groups/example/", run_status: "zero_result_after_checkpoint",
+      scan_started_at: "2026-10-07T00:00:00.000Z", previous_checkpoint: "2026-10-06T00:00:00.000Z",
+      checkpoint_candidate: "2026-10-07T00:00:00.000Z", checkpoint_enabled: true,
+      boundary_verified: true, records_seen: 1, run_id: "lifecycle", local_checkpoint_saved: false,
+      local_checkpoint_error: "QuotaExceededError",
+    },
+    updateCheckpointManifest: () => { throw new Error("synthetic file write failure"); },
+  });
+  assert.equal(fileFailure.result.status, "checkpoint_not_saved");
+  assert.equal(fileFailure.result.checkpoint_saved, false);
+  assert.equal(fileFailure.result.files.checkpoint_update.reason, "checkpoint_file_write_failed");
+  assert.equal(fileFailure.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
+
+  const boundaryMissing = await runCase({
+    lastRun: {
+      group_url: "https://www.facebook.com/groups/example/", run_status: "zero_result_after_checkpoint",
+      scan_started_at: "2026-10-07T00:00:00.000Z", previous_checkpoint: "2026-10-06T00:00:00.000Z",
+      checkpoint_candidate: "2026-10-07T00:00:00.000Z", checkpoint_enabled: true,
+      boundary_verified: false, records_seen: 1, run_id: "lifecycle",
+    },
+  });
+  assert.equal(boundaryMissing.result.status, "checkpoint_not_saved");
+  assert.equal(boundaryMissing.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
+
+  const mismatchedRun = await runCase({
+    lastRun: {
+      group_url: "https://www.facebook.com/groups/example/", run_status: "zero_result_after_checkpoint",
+      scan_started_at: "2026-10-07T00:00:00.000Z", previous_checkpoint: "2026-10-06T00:00:00.000Z",
+      checkpoint_candidate: "2026-10-07T00:00:00.000Z", checkpoint_enabled: true,
+      boundary_verified: true, records_seen: 1, run_id: "different-run",
+    },
+  });
+  assert.equal(mismatchedRun.result.status, "checkpoint_not_saved");
+  assert.equal(mismatchedRun.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
+
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  try {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      setItem: () => { const error = new Error("storage full"); error.name = "QuotaExceededError"; throw error; },
+    } });
+    assert.equal(pilot.writeCheckpoint("https://www.facebook.com/groups/example/", "2026-10-07T00:00:00.000Z"), false);
+  } finally {
+    if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+    else delete globalThis.localStorage;
+  }
 
   const stopped = await runCase({ manifestStatus: "stopped" });
   assert.equal(stopped.result.status, "stopped");
@@ -251,6 +312,16 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
     });
     assert.equal(gated.updated, false);
   }
+  const concurrentUpdate = runner.updateCheckpointManifest({
+    filePath: updateFile, groupUrl: "https://www.facebook.com/groups/example/", groupName: "Example Group",
+    lastRun: { group_url: "https://www.facebook.com/groups/example/", run_id: "other",
+      run_status: "completed_with_rows", records_seen: 2, boundary_verified: true, checkpoint_enabled: true,
+      previous_checkpoint: "2026-10-05T00:00:00.000Z", scan_started_at: "2026-10-08T00:00:00.000Z",
+      checkpoint_candidate: "2026-10-08T00:00:00.000Z" },
+  });
+  assert.equal(concurrentUpdate.updated, false);
+  assert.equal(concurrentUpdate.reason, "checkpoint_changed_during_scan");
+  assert.equal(JSON.parse(fs.readFileSync(updateFile, "utf8")).groups["https://www.facebook.com/groups/example/"].checkpoint, "2026-10-06T00:00:00.000Z");
   fs.rmSync(updateDir, { recursive: true, force: true });
 
   const failed = await runCase({ ingestionExitCode: 1 });

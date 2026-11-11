@@ -16,3 +16,7 @@ checkpoints.backup*.json
 # Edge profiles for local CDP runners
 .edge-profile-*/
 .cdp-profiles/
+
+# Local FPlus preview, exported content and research
+/fplus-export-*/
+/FPLUS_RESEARCH.md

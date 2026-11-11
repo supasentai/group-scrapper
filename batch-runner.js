@@ -280,8 +280,6 @@ function parseArgs(argv = process.argv.slice(2)) {
     cdpEndpoints: [
       "http://127.0.0.1:9222",
       "http://127.0.0.1:9223",
-      "http://127.0.0.1:9224",
-      "http://127.0.0.1:9225",
     ],
     profileDir: path.join(os.homedir(), "AppData", "Local", "Microsoft", "Edge", "User Data", "CodexGroupScraper"),
     downloadTimeoutMs: 60 * 1000,
@@ -647,14 +645,23 @@ function normalizeOutcome(outcome, expectedGroupUrl = "") {
   if (outcome.status === "error") return { status: "failed", run_id: outcome.run_id || null, row_count: null, needs_user_action: null, profile_port: null, profile_limit: null, error: outcome.error || "browser_runner_error" };
   try {
     const { manifest, manifestPath } = readValidManifest(outcome, expectedGroupUrl);
+    if (outcome.status === "checkpoint_not_saved" || (["completed", "zero_result"].includes(outcome.status) && outcome.checkpoint_saved !== true)) {
+      return { status: "failed", source_status: manifest.status, run_id: manifest.run_id,
+        row_count: manifest.row_count, checkpoint_saved: false,
+        checkpoint_update: outcome.files?.checkpoint_update || null,
+        local_checkpoint_warning: outcome.files?.local_checkpoint_warning || null,
+        needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null,
+        profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null,
+        error: `checkpoint_not_saved:${outcome.error || "unconfirmed"}`, manifest_path: manifestPath };
+    }
     if (outcome.status !== manifest.status) throw new Error("browser_runner_summary_manifest_status_mismatch");
     if (manifest.status === "zero_result") {
       if (manifest.row_count !== 0) throw new Error("zero_result_manifest_has_rows");
-      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
+      return { status: "zero_result", run_id: manifest.run_id, row_count: 0, checkpoint_saved: true, checkpoint_update: outcome.files?.checkpoint_update || null, local_checkpoint_warning: outcome.files?.local_checkpoint_warning || null, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
     if (manifest.status === "completed") {
       if (manifest.row_count <= 0) throw new Error("completed_manifest_has_no_rows");
-      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
+      return { status: "completed_with_rows", run_id: manifest.run_id, row_count: manifest.row_count, checkpoint_saved: true, checkpoint_update: outcome.files?.checkpoint_update || null, local_checkpoint_warning: outcome.files?.local_checkpoint_warning || null, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: null, manifest_path: manifestPath };
     }
     return { status: "stopped", run_id: manifest.run_id, row_count: manifest.row_count, needs_user_action: null, profile_port: outcome.profile_port || outcome.files?.profile_port || null, profile_limit: outcome.profile_limit || outcome.files?.profile_limit || null, error: outcome.error || "browser_runner_stopped", manifest_path: manifestPath };
   } catch (error) {
