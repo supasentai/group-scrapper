@@ -28,7 +28,7 @@ function usage() {
     "  --retry-status <list>      Comma-separated failed,stopped,not_run,needs_user_action,profile_limited,not_member,no_available_profile",
     "  --results-dir <path>       Results directory (default .\\results)",
     "  --days <n>                 Collector lookback days (default 30)",
-    "  --capture-mode <mode>      Collector mode: all (default) or classified",
+    "  --capture-mode <mode>      Collector mode: all (default), posts, or classified",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
     "  --max-runtime-ms <n>       Per-group collector runtime (default 900000)",
     "  --child-timeout-ms <n>     Ingestion/merge timeout; outer watchdog is derived safely",
@@ -309,7 +309,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
     else if (flag === "--capture-mode") {
-      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      if (!["all", "posts", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all, posts, or classified");
       config.captureMode = String(value).toLowerCase();
     }
     else if (flag === "--max-rounds") config.maxRounds = parsePositiveInteger(value, flag, { allowZero: true });
@@ -735,6 +735,9 @@ function runBatch(config, dependencies = {}) {
   if (!config.groupsFile) applyExplicitCheckpointStatuses(groups, config.retryStatuses);
   const requestedGroupCount = groups.filter((group) => group.status === "pending").length;
   const resumeManifest = config.resumeManifest ? readResumeManifest(config.resumeManifest) : null;
+  if (resumeManifest && (resumeManifest.capture_mode === "posts") !== (config.captureMode === "posts")) {
+    throw new Error("resume_manifest_posts_capture_mode_mismatch");
+  }
   if (resumeManifest) applyResumeState(groups, resumeManifest, config.retryStatuses);
   const endpoints = configuredCdpEndpoints(config);
   const runner = dependencies.runGroup || ((group, runConfig) => invokeBrowserRunner(group, runConfig));
@@ -830,6 +833,7 @@ function runBatch(config, dependencies = {}) {
           : "completed",
     input_path: inputPath,
     input_type: config.groupsFile ? "legacy_csv" : "checkpoints_json",
+    capture_mode: config.captureMode || "all",
     checkpoints_path: path.resolve(config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE),
     input_hash: sha256(inputBuffer),
     header_row: parsed.header_row,
