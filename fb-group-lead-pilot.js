@@ -36,10 +36,9 @@
     days: 30,
     scrollIntervalMs: 2200,
     maxIdleRounds: 12,
-    // One round past the checkpoint is enough to prove the feed crossed the
-    // boundary. Additional rounds only add latency and increase CDP timeout
-    // risk without expanding the requested time window.
-    maxOldPostRounds: 1,
+    // Require fresh, dated root posts older than the cutoff across multiple
+    // scroll rounds; comments and repeatedly visible cards are not evidence.
+    maxOldPostRounds: 3,
     // A feed that keeps changing but yields no usable boundary evidence must
     // not consume the full runtime watchdog. These are deliberately small
     // safety guards; the normal stop condition remains the checkpoint/date
@@ -613,15 +612,16 @@
     if (!text) return null;
     if (/^(just now|now|vừa xong)$/.test(text)) return new Date(now);
 
-    const relative = text.match(/^(\d+)\s*(m|min|mins|h|hr|hrs|d|w|wk|wks|mo|mos|month|months|y|yr|yrs|year|years|phút|giờ|ngày|tuần|tháng|năm)$/i);
+    const relativeText = text.replace(/^(?:an?)\s+/, "1 ").replace(/\s+(?:ago|trước)$/, "");
+    const relative = relativeText.match(/^(\d+)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|w|wk|wks|weeks?|mo|mos|months?|y|yr|yrs|years?|phút|giờ|ngày|tuần|tháng|năm)$/i);
     if (relative) {
       const amount = Number(relative[1]);
       const unit = relative[2].toLowerCase();
       const minutesByUnit = {
-        m: 1, min: 1, mins: 1, "phút": 1,
-        h: 60, hr: 60, hrs: 60, "giờ": 60,
-        d: 1440, "ngày": 1440,
-        w: 10080, wk: 10080, wks: 10080, "tuần": 10080,
+        m: 1, min: 1, mins: 1, minute: 1, minutes: 1, "phút": 1,
+        h: 60, hr: 60, hrs: 60, hour: 60, hours: 60, "giờ": 60,
+        d: 1440, day: 1440, days: 1440, "ngày": 1440,
+        w: 10080, wk: 10080, wks: 10080, week: 10080, weeks: 10080, "tuần": 10080,
         mo: 43800, mos: 43800, month: 43800, months: 43800, "tháng": 43800,
         y: 525600, yr: 525600, yrs: 525600, year: 525600, years: 525600, "năm": 525600,
       };
@@ -786,6 +786,13 @@
       .slice(0, 260);
   }
 
+  async function digestFingerprint(text) {
+    const value = textFingerprint(text);
+    if (!value || !globalThis.crypto?.subtle) return "";
+    const bytes = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   function canonicalContentUrl(rawUrl) {
     if (!rawUrl) return "";
     try {
@@ -912,6 +919,21 @@
     }) || "";
   }
 
+  function getPostTimeLinkLabel(link) {
+    const label = getTimeLinkLabel(link);
+    if (label || !link) return label;
+    // SVG timestamps can expose their text only through an accessible label.
+    const labelled = [link, ...link.querySelectorAll("[aria-labelledby]")];
+    for (const node of labelled) {
+      const ids = normalizeSpace(node.getAttribute("aria-labelledby")).split(" ").filter(Boolean);
+      for (const id of ids) {
+        const time = normalizeSpace(document.getElementById(id)?.textContent);
+        if (time && parseFacebookTime(time)) return time;
+      }
+    }
+    return "";
+  }
+
   function getVisiblePostUrlFromDocument(groupUrl) {
     const dialog = document.querySelector('[role="dialog"]');
     if (dialog) {
@@ -924,27 +946,39 @@
     return routeUrl && isPostInGroup(routeUrl, groupUrl) ? routeUrl : "";
   }
 
-  async function resolvePostUrlByInteraction(article, groupUrl) {
+  async function resolvePostUrlByInteraction(article, groupUrl, ownLinks = null, hoverOnly = false, expectedFingerprint = "") {
     if (typeof document === "undefined" || typeof location === "undefined") return "";
-    const candidates = [...article.querySelectorAll("a[href]")]
+    const readTimeLabel = ownLinks ? getPostTimeLinkLabel : getTimeLinkLabel;
+    const candidates = (ownLinks || [...article.querySelectorAll("a[href]")])
       .filter((link) => isVisibleNode(link))
-      .filter((link) => !canonicalPostUrl(link.href))
-      .filter((link) => isExactGroupLink(link.href, groupUrl))
-      .filter((link) => Boolean(getTimeLinkLabel(link)));
+      .filter((link) => ownLinks
+        ? isPostInGroup(link.href, groupUrl)
+        : !canonicalPostUrl(link.href) && isExactGroupLink(link.href, groupUrl))
+      .filter((link) => Boolean(ownLinks) || Boolean(readTimeLabel(link)));
 
     const trustedResolver = globalThis.__FB_GROUP_LEAD_PILOT_TRUSTED_POST_PERMALINK__;
     if (typeof trustedResolver === "function") {
       for (const candidate of candidates.slice(0, 2)) {
-        const resolved = await trustedResolver({
-          groupUrl,
-          href: candidate.href,
-          label: getTimeLinkLabel(candidate),
-        });
-        if (resolved) return resolved;
+        // Pin the exact element while the runner interacts with it. Facebook
+        // can insert or remove anchors elsewhere in the feed at any time.
+        const marker = "data-fb-lead-pilot-time-link";
+        if (ownLinks) candidate.setAttribute(marker, "");
+        try {
+          const resolved = await trustedResolver({
+            groupUrl,
+            href: candidate.href,
+            label: readTimeLabel(candidate),
+            ...(ownLinks ? { directPost: true, hoverOnly, expectedFingerprint } : {}),
+          });
+          if (ownLinks ? (resolved?.postUrl || resolved?.publishedAt) : resolved) return resolved;
+        } finally {
+          if (ownLinks) candidate.removeAttribute(marker);
+        }
       }
       return "";
     }
 
+    if (ownLinks) return "";
     for (const link of candidates.slice(0, 2)) {
       const beforeUrl = location.href;
       try {
@@ -1068,6 +1102,123 @@
     // Facebook sometimes renders comments as top-level role=article nodes;
     // those rows remain unresolved until a permalink/id is visible.
     return "unresolved";
+  }
+
+  async function collectFeedPosts(interactionState) {
+    const groupUrl = canonicalGroupUrl(location.href);
+    const messageSelector = '[data-ad-rendering-role="story_message"], [data-ad-preview="message"]';
+    const cardSelector = '[data-virtualized], div[role="article"]';
+    const cards = new Set();
+    for (const message of document.querySelectorAll(messageSelector)) {
+      // Facebook can render the story outside any article and wrap only its
+      // comments in role="article". Start from the story, not those articles.
+      const card = message.closest(cardSelector);
+      if (card) cards.add(card);
+    }
+    const metrics = interactionState.captureMetrics;
+    const records = [];
+    metrics.root_article_observations += cards.size;
+
+    for (const card of cards) {
+      if (!card.isConnected) continue;
+      const isOwnNode = (node) => node.closest(cardSelector) === card;
+      const isOwnHeader = (node) => isOwnNode(node) && !node.closest(messageSelector);
+      const readMessage = () => [...card.querySelectorAll(messageSelector)].find(isOwnNode);
+      let message = readMessage();
+      const expand = [...(message?.querySelectorAll('button, [role="button"]') || [])]
+        .find((button) => isVisibleNode(button) && /^(?:See more|Xem thêm)$/i.test(normalizeSpace(button.innerText)));
+      if (expand) {
+        expand.click();
+        await sleep(180);
+        if (!card.isConnected) continue;
+        message = readMessage();
+      }
+      const rawText = message?.innerText || message?.textContent || "";
+      const text = cleanSourceText(rawText, "", "");
+      if (!text) continue;
+
+      const author = findAuthor(card);
+      const headerLinks = [...card.querySelectorAll("a[href]")].filter((link) =>
+        isOwnHeader(link) && (link.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && isVisibleNode(link));
+      const timeLinks = headerLinks.filter((link) =>
+        !/[?&](?:comment_id|reply_comment_id)=/i.test(link.href) && getPostTimeLinkLabel(link)
+        && (isPostInGroup(link.href, groupUrl) || isExactGroupLink(link.href, groupUrl)));
+      const permalink = timeLinks.find((link) => {
+        const url = canonicalPostUrl(link.href);
+        return url && isPostInGroup(url, groupUrl);
+      });
+      const groupTimeLinks = timeLinks.filter((link) => isExactGroupLink(link.href, groupUrl));
+      const datetime = [...card.querySelectorAll("time[datetime]")].find(isOwnHeader)?.getAttribute("datetime");
+      // Some timestamps render only an SVG. A unique unlabeled icon link in
+      // the card header is a candidate until hovering confirms its purpose.
+      const iconLinks = headerLinks.filter((link) => isExactGroupLink(link.href, groupUrl)
+        && !/[?&](?:comment_id|reply_comment_id)=/i.test(link.href)
+        && !normalizeSpace(link.textContent) && !link.getAttribute("aria-label")
+        && link.querySelector("svg use"));
+      const labelledTimeLink = permalink || groupTimeLinks[0];
+      const iconTimeLink = !labelledTimeLink && iconLinks.length === 1 ? iconLinks[0] : null;
+      const timeLink = labelledTimeLink || iconTimeLink;
+      const timeText = (parseFacebookTime(datetime) ? datetime : "") || getPostTimeLinkLabel(timeLink);
+      let publishedAt = parseFacebookTime(timeText)?.toISOString() || "";
+      const cardKey = [author.profileUrl || author.name, textFingerprint(text)].join("::");
+      // Only the card's own metadata can supply a post ID in this mode.
+      const rootId = card.getAttribute("data-ft")?.match(/"top_level_post_id"\s*:\s*"?(\d+)\b/i)?.[1];
+      let postUrl = canonicalPostUrl(permalink?.href)
+        || (rootId ? `${groupUrl}posts/${rootId}/` : "");
+      const known = interactionState.postMetadata.get(card);
+      if (known?.postUrl && !postUrl) postUrl = known.postUrl;
+      if (known?.publishedAt) publishedAt = known.publishedAt;
+      if ((!postUrl || !datetime) && timeLink && !interactionState.permalinkInteractionAttempts.has(card)) {
+        interactionState.permalinkInteractionAttempts.add(card);
+        metrics.permalink_recovery_attempts += 1;
+        try {
+          const metadata = await resolvePostUrlByInteraction(card, groupUrl, [timeLink], Boolean(postUrl), await digestFingerprint(text));
+          if (metadata && (!iconTimeLink || metadata.postUrl)) {
+            if (metadata.postUrl && !postUrl) postUrl = metadata.postUrl;
+            if (metadata.publishedAt) publishedAt = metadata.publishedAt;
+            interactionState.postMetadata.set(card, metadata);
+          }
+        } catch (_error) {
+          // A card can be replaced while Facebook handles the click.
+        }
+      }
+      if (!postUrl || !isPostInGroup(postUrl, groupUrl)) {
+        metrics.roots_without_post_url += 1;
+        if (!interactionState.verifiedPostCards.has(cardKey)) {
+          interactionState.unverifiedPostCards.set(cardKey, {
+            published_at: publishedAt,
+            text_fingerprint_sha256: await digestFingerprint(text),
+            has_time_link: Boolean(timeLink),
+            has_datetime: Boolean(datetime),
+            had_direct_permalink: Boolean(permalink),
+            has_root_id: Boolean(rootId),
+            attempted_interaction: interactionState.permalinkInteractionAttempts.has(card),
+            card_is_virtualized: card.hasAttribute("data-virtualized"),
+            card_is_article: card.getAttribute("role") === "article",
+            header_link_count: headerLinks.length,
+          });
+        }
+        continue;
+      }
+      interactionState.verifiedPostCards.add(cardKey);
+      interactionState.unverifiedPostCards.delete(cardKey);
+      metrics.roots_with_post_url += 1;
+      metrics.records_emitted += 1;
+      records.push({
+        key: postUrl,
+        name: author.name,
+        profile_url: author.profileUrl,
+        is_anonymous: author.isAnonymous,
+        source_type: "post",
+        post_url: postUrl,
+        published_at_text: publishedAt || timeText,
+        published_at: publishedAt,
+        text,
+        data_quality_flags: /(?:…|\.\.\.)\s*(?:Xem thêm|See more)/i.test(rawText) ? "text_truncated" : "",
+      });
+    }
+    return records;
   }
 
   async function collectRenderedRecords(interactionState = {}) {
@@ -1564,6 +1715,14 @@
     };
   }
 
+  function advanceOldPostRounds(previousRounds, freshRecords, cutoff, scanStartedAt) {
+    const posts = freshRecords.filter((record) => record.source_type === "post");
+    if (!posts.length) return previousRounds;
+    const timestamps = posts.map((record) => publishedTimestamp(record, scanStartedAt));
+    if (timestamps.some((timestamp) => timestamp === null || timestamp >= cutoff.getTime())) return 0;
+    return previousRounds + 1;
+  }
+
   async function run(options = {}) {
     if (typeof document === "undefined") throw new Error("Chỉ chạy script này trên trang Facebook trong trình duyệt.");
     Object.assign(CONFIG, options);
@@ -1580,8 +1739,12 @@
     const state = { stopped: false, stopReason: "" };
     const hud = createHud(state);
     const records = new Map();
+    const postsOnly = CONFIG.captureMode === "posts";
     const interactionState = {
       permalinkInteractionAttempts: new WeakSet(),
+      postMetadata: new WeakMap(),
+      verifiedPostCards: new Set(),
+      unverifiedPostCards: new Map(),
       captureMetrics: {
         root_article_observations: 0,
         roots_with_post_url: 0,
@@ -1597,6 +1760,10 @@
     const scanStartedAt = new Date();
     const previousCheckpoint = readCheckpoint(groupUrl);
     const cutoff = previousCheckpoint || new Date(scanStartedAt.getTime() - CONFIG.days * 86_400_000);
+    const collect = postsOnly ? collectFeedPosts : async (state) => [
+      ...await collectRenderedRecords(state),
+      ...await collectFeedPosts(state),
+    ];
     let lastHeight = 0;
     let idleRounds = 0;
     let oldPostRounds = 0;
@@ -1623,8 +1790,12 @@
       && (!CONFIG.maxRounds || round < CONFIG.maxRounds)
       && (!CONFIG.maxRuntimeMs || Date.now() - scanStartedAt.getTime() < CONFIG.maxRuntimeMs)) {
       round += 1;
-      await expandVisibleDiscussion();
-      for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
+      if (!postsOnly) await expandVisibleDiscussion();
+      const freshRecords = [];
+      for (const record of await collect(interactionState)) {
+        if (!records.has(record.key)) freshRecords.push(record);
+        records.set(record.key, record);
+      }
 
       const allRecords = [...records.values()];
       const capturedRows = captureRecords(filterRecordsSince(allRecords, cutoff, scanStartedAt), groupContext);
@@ -1637,7 +1808,7 @@
         })
         .filter((date) => date && !Number.isNaN(date.getTime()));
       const oldest = recordDates.length ? new Date(Math.min(...recordDates.map(Number))) : null;
-      oldPostRounds = oldest && oldest < cutoff ? oldPostRounds + 1 : 0;
+      oldPostRounds = advanceOldPostRounds(oldPostRounds, freshRecords, cutoff, scanStartedAt);
       if (records.size === 0) {
         noRecordRounds += 1;
         unresolvedTimestampRounds = 0;
@@ -1690,10 +1861,25 @@
       state.stopReason = "hard_limit";
     }
 
-    for (const record of await collectRenderedRecords(interactionState)) records.set(record.key, record);
+    for (const record of await collect(interactionState)) records.set(record.key, record);
     const filteredRecords = filterRecordsSince([...records.values()], cutoff, scanStartedAt);
     const capturedRows = captureRecords(filteredRecords, groupContext);
     feedMetrics.capture = interactionState.captureMetrics;
+    const unresolvedPostCards = [...interactionState.unverifiedPostCards.values()]
+      .filter((entry) => !entry.published_at || Date.parse(entry.published_at) >= cutoff.getTime());
+    const fingerprints = new Map();
+    for (const record of records.values()) {
+      const fingerprint = await digestFingerprint(record.text);
+      if (!fingerprint) continue;
+      const counts = fingerprints.get(fingerprint) || { post: 0, comment: 0, reply: 0 };
+      if (Object.hasOwn(counts, record.source_type)) counts[record.source_type] += 1;
+      fingerprints.set(fingerprint, counts);
+    }
+    feedMetrics.capture.unverified_posts_in_window = unresolvedPostCards.length;
+    feedMetrics.capture.unverified_post_diagnostics = unresolvedPostCards.map((entry) => ({
+      ...entry, published_at: entry.published_at || null,
+      matching_captured_records: fingerprints.get(entry.text_fingerprint_sha256) || { post: 0, comment: 0, reply: 0 },
+    }));
     const shouldClassify = String(CONFIG.captureMode || "all").toLowerCase() === "classified"
       && CONFIG.deferClassification === false;
     const classified = shouldClassify ? classifyRecords(capturedRows, groupContext) : [];
@@ -1711,8 +1897,9 @@
     // login wall, DOM chưa tải hoặc Facebook thay đổi giao diện), để lần sau
     // vẫn quét lại khoảng thời gian chưa chắc đã đọc được.
     const boundaryVerified = oldPostRounds >= CONFIG.maxOldPostRounds;
-    const checkpointEligible = completedNaturally && records.size > 0 && boundaryVerified && CONFIG.useCheckpoint;
-    const localCheckpoint = checkpointEligible
+    const checkpointEligible = completedNaturally && records.size > 0 && boundaryVerified && CONFIG.useCheckpoint
+      && feedMetrics.capture.unverified_posts_in_window === 0;
+    const localCheckpoint = checkpointEligible && !postsOnly
       ? writeCheckpointDetailed(groupUrl, scanStartedAt)
       : { saved: false, error: null };
     const runStatus = state.stopped
@@ -1723,7 +1910,11 @@
           ? "zero_result_after_checkpoint"
           : "completed_with_rows";
     hud.update("Đã hoàn tất thu thập.", capturedRows);
-    const checkpointMessage = localCheckpoint.saved
+    const checkpointMessage = postsOnly && feedMetrics.capture.unverified_posts_in_window > 0
+      ? " Giữ checkpoint vì có bài chưa xác minh được URL."
+      : postsOnly && checkpointEligible
+      ? " Runner sẽ kiểm tra và lưu checkpoint sau khi lấy bài gốc."
+      : localCheckpoint.saved
       ? " Đã lưu checkpoint dự phòng trong trình duyệt; runner sẽ lưu file chính."
       : state.stopped
         ? ` Chưa cập nhật checkpoint vì đã dừng (${state.stopReason || "stopped"}).`
@@ -1733,7 +1924,9 @@
             ? " Chưa cập nhật checkpoint vì chưa xác minh được ranh giới."
             : " Không lưu được checkpoint dự phòng trong trình duyệt; runner sẽ kiểm tra file chính.";
     const completedAt = new Date();
-    const manifestStatus = manifestStatusForRun(runStatus, capturedRows.length);
+    const manifestStatus = postsOnly && state.stopped
+      ? "stopped"
+      : manifestStatusForRun(runStatus, capturedRows.length);
     const runManifest = buildRunManifest({
       groupUrl,
       groupName: groupContext.groupName,
@@ -1751,6 +1944,7 @@
       localCheckpointError: localCheckpoint.error,
       feedMetrics,
     });
+    if (postsOnly) runManifest.capture_mode = "posts";
     hud.finish(`Đã xuất file scan raw với ${capturedRows.length} dòng. Phân loại thực hiện ở bước downstream.${checkpointMessage}`);
 
     const result = {
@@ -1825,6 +2019,7 @@
     getGroupContext,
     filterRecordsSince,
     boundaryStopReason,
+    advanceOldPostRounds,
     publishedTimestamp,
     inferAuthorFromText,
     inferSourceType,
