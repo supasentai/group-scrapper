@@ -67,7 +67,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--results-dir") config.resultsDir = path.resolve(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
     else if (flag === "--capture-mode") {
-      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      if (!["all", "posts", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all, posts, or classified");
       config.captureMode = String(value).toLowerCase();
     }
     else if (flag === "--max-rounds") {
@@ -265,7 +265,7 @@ function usage() {
     "Options:",
     "  --groups-file <path>       Legacy CSV group source",
     "  --checkpoints-file <path> Primary JSON group/checkpoint source",
-    "  --capture-mode <mode>      Collector mode: all (default) or classified",
+    "  --capture-mode <mode>      Collector mode: all (default), posts, or classified",
     "  --resume-manifest <path>   Resume prior batch",
     "  --retry-status <list>      Retry statuses passed to batch",
     "  --extra-run-id <run_id>    Include explicit aggregate rerun (repeatable)",
