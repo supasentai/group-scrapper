@@ -69,7 +69,7 @@ function usage() {
     "  --collector-path <path>    Local collector source",
     "  --cdp-endpoint <url>       Edge CDP endpoint (default http://127.0.0.1:9222)",
     "  --days <n>                 Collector lookback days (default 30)",
-    "  --capture-mode <mode>      Capture mode: all (default) or classified",
+    "  --capture-mode <mode>      Capture mode: all (default), posts, or classified",
     "  --max-rounds <n>           Bounded collector rounds (default 0)",
     "  --max-runtime-ms <n>       Bounded collector runtime (default 900000)",
     "  --results-dir <path>       Results directory",
@@ -176,7 +176,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === "--cdp-endpoint") config.cdpEndpoint = validateCdpEndpoint(value);
     else if (flag === "--days") config.days = parsePositiveInteger(value, flag);
     else if (flag === "--capture-mode") {
-      if (!["all", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all or classified");
+      if (!["all", "posts", "classified"].includes(String(value).toLowerCase())) throw new Error("--capture-mode must be all, posts, or classified");
       config.captureMode = String(value).toLowerCase();
     }
     else if (flag === "--max-rounds") config.maxRounds = parsePositiveInteger(value, flag, { allowZero: true });
@@ -955,7 +955,7 @@ async function detectUserAction(page) {
   return null;
 }
 
-async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, label } = {}) {
+async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, label, directPost = false, hoverOnly = false, expectedFingerprint = "" } = {}) {
   const beforeUrl = page.url();
   const targetHref = String(href || "");
   const targetLabel = String(label || "");
@@ -965,23 +965,104 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
     return Boolean(url && /\/groups\/[^/]+\/posts\/\d+\/$/i.test(url));
   };
 
-  const anchorIndex = await page.evaluate(({ targetHref: expectedHref, targetLabel: expectedLabel }) => {
+  const anchorSelector = directPost ? "a[data-fb-lead-pilot-time-link][href]" : "a[href]";
+  const anchorIndex = await page.evaluate(({ targetHref: expectedHref, targetLabel: expectedLabel, anchorSelector, directPost }) => {
+    const anchors = [...document.querySelectorAll(anchorSelector)];
+    if (directPost && (anchors.length !== 1 || document.querySelector('[role="dialog"]'))) return -1;
     const normalize = (value) => String(value || "")
       .replace(/[\p{Cf}\u034f]/gu, "")
       .replace(/\s+/g, " ")
       .trim();
-    return [...document.querySelectorAll("a[href]")].findIndex((anchor) => {
+    return anchors.findIndex((anchor) => {
       if (anchor.href !== expectedHref) return false;
-      const labels = [anchor.innerText, anchor.textContent, anchor.getAttribute("aria-label")]
+      const labels = [anchor.innerText, anchor.textContent, anchor.getAttribute("aria-label"),
+        anchor.getAttribute("title"), anchor.getAttribute("data-tooltip-content")]
         .map(normalize)
         .filter(Boolean);
+      if (directPost) {
+        for (const node of [anchor, ...anchor.querySelectorAll("[aria-labelledby]")]) {
+          for (const id of normalize(node.getAttribute("aria-labelledby")).split(" ").filter(Boolean)) {
+            labels.push(normalize(document.getElementById(id)?.textContent));
+          }
+        }
+      }
       return !expectedLabel || labels.includes(normalize(expectedLabel));
     });
-  }, { targetHref, targetLabel });
+  }, { targetHref, targetLabel, anchorSelector, directPost });
   if (anchorIndex < 0) return "";
 
+  const anchor = page.locator(anchorSelector).nth(anchorIndex);
+  let publishedAt = "";
+  if (directPost) {
+    try {
+      const beforeTooltips = await page.getByRole("tooltip").allTextContents();
+      await anchor.hover({ timeout: 3_000 });
+      let postUrl = "";
+      await waitFor(async () => {
+        const metadata = await anchor.evaluate((node, beforeTooltips) => ({
+          href: node.href,
+          tooltip: [...document.querySelectorAll('[role="tooltip"]')]
+            .filter((tip) => tip.getClientRects().length && !beforeTooltips.includes(tip.textContent))
+            .at(-1)?.textContent || "",
+        }), beforeTooltips, { timeout: 500 });
+        const candidate = pilot.canonicalPostUrl(metadata.href);
+        if (!hasCommentIdentity(metadata.href) && isGroupPostRoute(candidate)
+          && pilot.isPostInGroup(candidate, groupUrl)) postUrl = candidate;
+        // The full date in the tooltip is in the Edge session's local zone.
+        if (/\b\d{4}\b/.test(metadata.tooltip) && /\b\d{1,2}:\d{2}\b/.test(metadata.tooltip)) {
+          const date = pilot.parseFacebookTime(metadata.tooltip);
+          if (date) publishedAt = date.toISOString();
+        }
+        return Boolean(publishedAt && (postUrl || (hoverOnly && targetLabel)));
+      }, 1_800, 120);
+      if (postUrl || hoverOnly) return { postUrl, publishedAt };
+    } catch (_error) {
+      if (hoverOnly) return "";
+    }
+    if (await anchor.evaluate(node => node.href, undefined, { timeout: 500 }).catch(() => "") !== targetHref) return "";
+  }
+
   const readResolvedPostUrl = async () => {
-    const routeUrl = pilot.canonicalPostUrl(page.url());
+    const rawRoute = page.url();
+    const routeUrl = pilot.canonicalPostUrl(rawRoute);
+    if (directPost) {
+      if (hasCommentIdentity(rawRoute)) return "";
+      if (expectedFingerprint) {
+        const matchesStory = await page.evaluate(async (expected) => {
+          const container = document.querySelector('[role="dialog"]') || document;
+          const stories = container.querySelectorAll('[data-ad-rendering-role="story_message"], [data-ad-preview="message"]');
+          for (const story of stories) {
+            const value = String(story.innerText || story.textContent || "").replace(/\s+/g, " ").trim().toLowerCase()
+              .replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\b\d+\b/g, "#").slice(0, 260);
+            if (!value) continue;
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+            const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+            if (hash === expected) return true;
+          }
+          return false;
+        }, expectedFingerprint).catch(() => false);
+        if (!matchesStory) return "";
+      }
+      if (isGroupPostRoute(routeUrl)
+        && pilot.isPostInGroup(routeUrl, groupUrl)) return routeUrl;
+      const dialogUrls = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        const storySelector = '[data-ad-rendering-role="story_message"], [data-ad-preview="message"]';
+        const story = dialog?.querySelector(storySelector);
+        if (!story) return [];
+        const card = story.closest('div[role="article"]') || dialog;
+        return [...card.querySelectorAll("a[href]")].filter((anchor) => {
+          const owner = anchor.closest('div[role="article"]');
+          return (!owner || owner === card) && !anchor.closest(storySelector)
+            && !/[?&](?:comment_id|reply_comment_id)=/i.test(anchor.href)
+            && Boolean(anchor.querySelector("time, [datetime]")
+              || anchor.getAttribute("title") || anchor.getAttribute("aria-label") || anchor.textContent);
+        }).map((anchor) => anchor.href);
+      });
+      const matches = [...new Set(dialogUrls.map(pilot.canonicalPostUrl)
+        .filter((url) => isGroupPostRoute(url) && pilot.isPostInGroup(url, groupUrl)))];
+      return matches.length === 1 ? matches[0] : "";
+    }
     // Facebook may replace a numeric group id with its vanity slug after the
     // click. The clicked anchor was already restricted to the target group;
     // validate the resulting route shape without comparing id and slug.
@@ -1001,7 +1082,7 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
 
   let resolved = "";
   try {
-    await page.locator("a[href]").nth(anchorIndex).click({ force: true, timeout: 5_000 });
+    await anchor.click({ force: true, timeout: 5_000 });
     await waitFor(async () => {
       resolved = await readResolvedPostUrl();
       return Boolean(resolved);
@@ -1021,9 +1102,11 @@ async function resolvePostPermalinkWithTrustedClick(page, { groupUrl, href, labe
           timeout: 30_000,
         }).catch(() => {});
       }
+    } else if (directPost && await page.locator('[role="dialog"]').count()) {
+      await page.keyboard.press("Escape").catch(() => {});
     }
   }
-  return resolved;
+  return directPost && resolved ? { postUrl: resolved, publishedAt } : resolved;
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -1125,10 +1208,10 @@ async function runBrowser(config, dependencies = {}) {
         const task = download.saveAs(destination).then(() => {
           files.downloads.push(destination);
           return destination;
-        });
+        }).catch((error) => ({ download_error: String(error?.message || error), filename }));
         downloadTasks.push(task);
       } catch (error) {
-        downloadTasks.push(Promise.reject(error));
+        downloadTasks.push(Promise.resolve({ download_error: String(error?.message || error), filename: filename || null }));
       }
     };
     page.on("download", downloadHandler);
@@ -1149,11 +1232,17 @@ async function runBrowser(config, dependencies = {}) {
       const run = globalThis.__FB_GROUP_LEAD_PILOT_RUN__;
       if (!run || typeof run.then !== "function") throw new Error("Collector run promise was not created");
       try {
-        await run;
+        const result = await run;
+        return {
+          error: globalThis.__FB_GROUP_LEAD_PILOT_ERROR__ || null,
+          lastRun: globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__,
+          fallbackArtifacts: result && Array.isArray(result.all) && result.manifest
+            ? { csv: globalThis.FBGroupLeadPilot.buildCsv(result.all), manifest: result.manifest }
+            : null,
+        };
       } catch (error) {
         return { error: String(error?.stack || error), lastRun: globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__ };
       }
-      return { error: globalThis.__FB_GROUP_LEAD_PILOT_ERROR__ || null, lastRun: globalThis.__FB_GROUP_LEAD_PILOT_LAST_RUN__ };
     });
     const completionResult = await withTimeout(
       completion,
@@ -1184,8 +1273,23 @@ async function runBrowser(config, dependencies = {}) {
       async () => Boolean(findDownloadPair(fs.readdirSync(stagingDir))),
       timeoutMs,
     ));
+    const downloadResults = await Promise.all(downloadTasks);
+    const downloadErrors = downloadResults.filter((result) => result && result.download_error);
+    if (downloadErrors.length && completionResult.fallbackArtifacts) {
+      const lastRun = completionResult.lastRun || {};
+      const fallback = completionResult.fallbackArtifacts;
+      const csvName = safeDownloadName(lastRun.scan_filename);
+      const manifestName = safeDownloadName(lastRun.manifest_filename);
+      if (!csvName.endsWith('.csv') || !manifestName.endsWith('.manifest.json')
+        || fallback.manifest.run_id !== lastRun.run_id || fallback.manifest.output_file !== csvName
+        || fallback.manifest.group_url !== lastRun.group_url || typeof fallback.csv !== 'string') {
+        throw new Error('Collector fallback artifacts do not match the completed run');
+      }
+      fs.writeFileSync(path.join(stagingDir, csvName), fallback.csv, 'utf8');
+      fs.writeFileSync(path.join(stagingDir, manifestName), `${JSON.stringify(fallback.manifest, null, 2)}\n`, 'utf8');
+      files.download_warning = { errors: downloadErrors, recovered_from_collector: true };
+    }
     const pairReady = await waitForPair({ stagingDir, timeoutMs: config.downloadTimeoutMs });
-    await Promise.all(downloadTasks);
     const pair = findDownloadPair(fs.readdirSync(stagingDir));
     if (!pairReady || !pair) throw new Error("Expected scan CSV and manifest downloads were not both found");
     files.csv = path.join(stagingDir, pair.csv);
@@ -1200,35 +1304,53 @@ async function runBrowser(config, dependencies = {}) {
     // are safe; previously this early return made stopped runs lose the
     // post_root_backfill phase entirely.
     const scanRows = mergeResults.parseCsv(fs.readFileSync(files.csv, "utf8"));
-    const backfill = await backfillPostRoots({
-      context,
-      rows: scanRows,
-      groupName: config.groupName,
-      groupUrl: config.groupUrl,
-      timeoutMs: config.postRootBackfillTimeoutMs || DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
-    });
-    if (backfill.rows.length !== scanRows.length) {
-      fs.writeFileSync(files.csv, pilot.buildCsv(backfill.rows), "utf8");
+    const postsOnly = config.captureMode === "posts";
+    if (postsOnly) {
+      const invalidRow = scanRows.some((row) =>
+        row.source_type !== "post" || pilot.canonicalPostUrl(row.content_url) !== row.content_url
+        || !pilot.isPostInGroup(row.content_url, config.groupUrl));
+      if (manifest.capture_mode !== "posts" || invalidRow) {
+        throw new Error("Collector output does not match direct posts capture mode");
+      }
+    } else {
+      const backfill = await backfillPostRoots({
+        context,
+        rows: scanRows,
+        groupName: config.groupName,
+        groupUrl: config.groupUrl,
+        timeoutMs: config.postRootBackfillTimeoutMs || DEFAULT_POST_ROOT_BACKFILL_TIMEOUT_MS,
+      });
+      if (backfill.rows.length !== scanRows.length) {
+        fs.writeFileSync(files.csv, pilot.buildCsv(backfill.rows), "utf8");
+      }
+      manifest = updateManifestWithPostRootBackfill(files.manifest, manifest, backfill.stats, backfill.rows.length);
+      files.post_root_backfill = backfill.stats;
+      files.row_count = manifest.row_count;
     }
-    manifest = updateManifestWithPostRootBackfill(
-      files.manifest,
-      manifest,
-      backfill.stats,
-      backfill.rows.length,
-    );
-    files.post_root_backfill = backfill.stats;
-    files.row_count = manifest.row_count;
 
     if (["stopped", "partial"].includes(String(manifest.status || "").toLowerCase())) {
       files.collector_status = manifest.status;
-      files.backfill_only = true;
+      files.backfill_only = !postsOnly;
       return {
         status: "stopped",
         run_id: manifest.run_id,
         files,
         needs_user_action: null,
         row_count: manifest.row_count,
-        error: "Collector stopped/partial; post-root backfill ran read-only, ingestion/merge/checkpoint were skipped.",
+        error: postsOnly ? "Collector stopped; ingestion, merge, and checkpoint were skipped."
+          : "Collector stopped/partial; post-root backfill ran read-only, ingestion/merge/checkpoint were skipped.",
+      };
+    }
+
+    if (manifest.feed_metrics?.capture?.unverified_posts_in_window > 0) {
+      files.checkpoint_update = { updated: false, reason: "post_permalink_unverified" };
+      return {
+        status: "checkpoint_not_saved",
+        run_id: manifest.run_id,
+        files,
+        checkpoint_saved: false,
+        row_count: manifest.row_count,
+        error: files.checkpoint_update.reason,
       };
     }
 
@@ -1245,7 +1367,6 @@ async function runBrowser(config, dependencies = {}) {
     files.merge = merge.json || { exitCode: merge.exitCode, stderr: merge.stderr };
     if (merge.exitCode !== 0) throw new Error(`Merge failed${merge.timedOut ? " (timeout)" : ""}: ${merge.stderr || merge.stdout}`);
     const lastRun = completionResult.lastRun || null;
-    files.last_run = lastRun;
     const runMatchesManifest = lastRun
       && lastRun.run_id === manifest.run_id
       && lastRun.group_url === manifest.group_url
@@ -1254,11 +1375,16 @@ async function runBrowser(config, dependencies = {}) {
       && lastRun.boundary_verified === true && manifest.boundary_verified === true
       && ((manifest.status === "completed" && lastRun.run_status === "completed_with_rows")
         || (manifest.status === "zero_result" && lastRun.run_status === "zero_result_after_checkpoint"));
+    files.last_run = lastRun;
     try {
-      files.checkpoint_update = runMatchesManifest
-        ? (dependencies.updateCheckpointManifest || updateCheckpointManifest)({ filePath: config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE,
-          groupUrl: config.groupUrl, groupName: config.groupName, lastRun })
-        : { updated: false, reason: "collector_manifest_mismatch_or_boundary_unverified" };
+      if (runMatchesManifest) {
+        files.checkpoint_update = (dependencies.updateCheckpointManifest || updateCheckpointManifest)({
+          filePath: config.checkpointsFile || DEFAULT_CHECKPOINTS_FILE,
+          groupUrl: config.groupUrl, groupName: config.groupName, lastRun,
+        });
+      } else {
+        files.checkpoint_update = { updated: false, reason: "collector_manifest_mismatch_or_boundary_unverified" };
+      }
     } catch (error) {
       files.checkpoint_update = { updated: false, reason: "checkpoint_file_write_failed", error: String(error.message || error) };
     }
