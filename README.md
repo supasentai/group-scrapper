@@ -175,6 +175,8 @@ node .\batch-runner.js `
 
 `captureMode=all` là mặc định: collector chỉ áp dụng checkpoint/date window, dọn UI và technical dedupe; noise, seed-like, low-intent và text ngắn vẫn nằm trong scan raw. Classification chỉ là bước sau, dùng `--classify` ở aggregator/merge.
 
+Dùng `--capture-mode posts` với batch runner hoặc browser runner để lấy bài đăng trực tiếp từ feed nhóm. Collector đọc nội dung thẻ bài và xác minh URL từ link thời gian hoặc ID của chính thẻ. Khi Facebook chỉ hiển thị biểu tượng thời gian, collector rê chuột lên biểu tượng để xác minh permalink và giờ đăng. Chế độ này bỏ qua luồng bình luận và dùng thời điểm bài đăng để xác minh checkpoint. Nếu có bài chưa xác minh được URL trong khoảng quét, runner ghi lỗi và giữ checkpoint để có thể thử lại. Khi tiếp tục một batch chỉ lấy bài đăng, dùng lại `--capture-mode posts`.
+
 Batch ghi `batch_manifest_<id>.json` trong `results`, gồm hash/path input, thời gian ISO, danh sách endpoint, kết quả từng dòng và bộ đếm trạng thái. Key URL và `group_url` phải cùng canonical; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled` và không chạy. CSV có cột `TÊN HỘI NHÓM`/`LINK` vẫn dùng được qua `--groups-file`. Nếu gặp `needs_user_action`, batch dừng an toàn và ghi các group phía sau là `not_run`. Với `profile_limited` hoặc `not_member`, batch tự thử profile kế tiếp; nếu cả danh sách đều không truy cập được group thì ghi `no_available_profile`, không cập nhật checkpoint. Batch không đăng nhập, không nhập credential và không xử lý CAPTCHA.
 
 ### Cross-group Aggregation Phase 3
