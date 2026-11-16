@@ -9,6 +9,17 @@ const collectorSource = fs.readFileSync(require.resolve("./fb-group-lead-pilot.j
 assert.doesNotMatch(collectorSource, /text\.length\s*<\s*12/);
 
 assert.equal(pilot.CONFIG.captureMode, "all");
+const boundaryCutoff = new Date("2026-11-13T01:30:00Z");
+const boundaryNow = new Date("2026-11-14T01:30:00Z");
+const boundaryPost = (time) => ({ source_type: "post", published_at: time });
+const oldPost = boundaryPost("2026-11-12T12:00:00Z");
+const newPost = boundaryPost("2026-11-14T00:00:00Z");
+assert.equal(pilot.advanceOldPostRounds(0, [{ ...oldPost, source_type: "comment" }], boundaryCutoff, boundaryNow), 0);
+assert.equal(pilot.advanceOldPostRounds(0, [oldPost], boundaryCutoff, boundaryNow), 1);
+assert.equal(pilot.advanceOldPostRounds(1, [], boundaryCutoff, boundaryNow), 1);
+assert.equal(pilot.advanceOldPostRounds(1, [newPost], boundaryCutoff, boundaryNow), 0);
+assert.equal(pilot.advanceOldPostRounds(2, [oldPost], boundaryCutoff, boundaryNow), 3);
+assert.equal(pilot.advanceOldPostRounds(2, [boundaryPost("unknown")], boundaryCutoff, boundaryNow), 0);
 assert.equal(pilot.CONFIG.deferClassification, true);
 assert.equal(pilot.CONFIG.feedHydrationGraceMs, 12_000);
 assert.equal(pilot.CONFIG.feedHydrationPollMs, 350);
