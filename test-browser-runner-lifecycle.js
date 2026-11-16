@@ -6,20 +6,25 @@ const os = require("node:os");
 const path = require("node:path");
 const pilot = require("./fb-group-lead-pilot.js");
 const runner = require("./browser-runner.js");
+const { parseCsv } = require("./merge-results.js");
 
-function makePage(lastRun = null) {
+function makePage(lastRun = null, fallbackArtifacts = null) {
   let closeCount = 0;
   let offCount = 0;
   const gotoUrls = [];
   let injectedCheckpoints = null;
+  let downloadHandler = null;
   return {
     url: () => "https://www.facebook.com/groups/example/",
     goto: async (url) => { gotoUrls.push(url); },
-    on: () => {},
+    on: (event, handler) => { if (event === "download") downloadHandler = handler; },
     off: () => { offCount += 1; },
     exposeFunction: async () => {},
     evaluate: async (...args) => {
-      if (args.length === 1) return { error: null, lastRun };
+      if (args.length === 1) {
+        if (fallbackArtifacts && downloadHandler) downloadHandler({ suggestedFilename: () => "fb_group_scan_3d_lifecycle.csv", saveAs: async () => { throw new Error("synthetic download failure"); } });
+        return { error: null, lastRun, fallbackArtifacts };
+      }
       injectedCheckpoints = args[1]?.checkpoints || null;
       return undefined;
     },
@@ -43,6 +48,7 @@ function makeBrowser(page, backfillPage = page) {
     }],
     close: async () => { closeCount += 1; },
     get closeCount() { return closeCount; },
+    get newPageCount() { return newPageCount; },
   };
 }
 
@@ -62,7 +68,7 @@ function makeConfig(resultsDir, checkpointsFile) {
   };
 }
 
-function writePair(stagingDir, status, rows = [], lastRun = null) {
+function writePair(stagingDir, status, rows = [], lastRun = null, captureMode) {
   const csv = "fb_group_scan_3d_lifecycle.csv";
   const manifest = "fb_group_scan_3d_lifecycle.manifest.json";
   fs.writeFileSync(path.join(stagingDir, csv), pilot.buildCsv(rows), "utf8");
@@ -72,12 +78,15 @@ function writePair(stagingDir, status, rows = [], lastRun = null) {
     started_at: lastRun?.scan_started_at || "2026-10-07T00:00:00.000Z",
     records_seen: lastRun?.records_seen || 0,
     boundary_verified: lastRun?.boundary_verified === true,
+    capture_mode: captureMode,
+    feed_metrics: lastRun?.feed_metrics,
     status,
     row_count: rows.length,
   }), "utf8");
 }
 
-async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null, scanRows = [], backfillCandidate = null, updateCheckpointManifest = undefined } = {}) {
+async function runCase({ manifestStatus = "zero_result", action = null, ingestionExitCode = 0, lastRun = null,
+  scanRows = [], backfillCandidate = null, updateCheckpointManifest = undefined, captureMode, fallbackArtifacts = null } = {}) {
   const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-runner-lifecycle-"));
   const checkpointsFile = path.join(resultsDir, "checkpoints.json");
   fs.writeFileSync(checkpointsFile, JSON.stringify({
@@ -90,7 +99,7 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
       },
     },
   }), "utf8");
-  const page = makePage(lastRun);
+  const page = makePage(lastRun, fallbackArtifacts);
   const backfillPage = backfillCandidate ? {
     goto: async () => {},
     evaluate: async () => [backfillCandidate],
@@ -99,11 +108,13 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   const browser = makeBrowser(page, backfillPage);
   const commands = [];
   try {
-    const result = await runner.runBrowser(makeConfig(resultsDir, checkpointsFile), {
+    const config = { ...makeConfig(resultsDir, checkpointsFile), captureMode, postRootBackfillTimeoutMs: 1000 };
+    const result = await runner.runBrowser(config, {
       playwright: { chromium: { connectOverCDP: async () => browser } },
       detectUserAction: async () => action,
       waitForPair: async ({ stagingDir }) => {
-        writePair(stagingDir, manifestStatus, scanRows, lastRun);
+        if (fallbackArtifacts) return fs.existsSync(path.join(stagingDir, "fb_group_scan_3d_lifecycle.csv")) && fs.existsSync(path.join(stagingDir, "fb_group_scan_3d_lifecycle.manifest.json"));
+        writePair(stagingDir, manifestStatus, scanRows, lastRun, captureMode);
         return true;
       },
       runCommand: (command) => {
@@ -121,7 +132,8 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
       },
       updateCheckpointManifest,
     });
-    return { result, page, browser, commands, checkpointDocument: JSON.parse(fs.readFileSync(checkpointsFile, "utf8")) };
+    const rows = result.files.csv ? parseCsv(fs.readFileSync(result.files.csv, "utf8")) : [];
+    return { result, page, browser, commands, rows, checkpointDocument: JSON.parse(fs.readFileSync(checkpointsFile, "utf8")) };
   } catch (error) {
     return { error, page, browser, commands, checkpointDocument: JSON.parse(fs.readFileSync(checkpointsFile, "utf8")) };
   } finally {
@@ -130,6 +142,11 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
 }
 
 (async () => {
+  const fallbackRun = { group_name: "Example Group", group_url: "https://www.facebook.com/groups/example/", run_status: "zero_result_after_checkpoint", scan_started_at: "2026-10-07T00:00:00.000Z", previous_checkpoint: "2026-10-06T00:00:00.000Z", checkpoint_candidate: "2026-10-07T00:00:00.000Z", checkpoint_enabled: true, boundary_verified: true, run_id: "lifecycle", records_seen: 1, scan_filename: "fb_group_scan_3d_lifecycle.csv", manifest_filename: "fb_group_scan_3d_lifecycle.manifest.json" };
+  const recovered = await runCase({ lastRun: fallbackRun, fallbackArtifacts: { csv: pilot.buildCsv([]), manifest: { run_id: "lifecycle", group_url: fallbackRun.group_url, output_file: fallbackRun.scan_filename, started_at: fallbackRun.scan_started_at, records_seen: 1, boundary_verified: true, status: "zero_result", row_count: 0 } } });
+  assert.ifError(recovered.error);
+  assert.equal(recovered.result.status, "zero_result");
+  assert.equal(recovered.result.files.download_warning.recovered_from_collector, true);
   let extractorArgument = null;
   let extractorSource = "";
   await runner.readPostRootCandidates({
@@ -180,6 +197,48 @@ async function runCase({ manifestStatus = "zero_result", action = null, ingestio
   assert.equal(completedLastRun.local_checkpoint_error, "QuotaExceededError");
   assert.equal(completedLastRun.started_at, "2026-10-07T00:00:00.000Z");
   assert.match(completedLastRun.completed_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+  const postUrl = "https://www.facebook.com/groups/example/posts/456/";
+  const postRow = {
+    group_url: "https://www.facebook.com/groups/example/",
+    group_name: "Example Group",
+    content_url: postUrl,
+    name: "Root Author",
+    source_type: "post",
+    text_excerpt: "Original post",
+    published_at_text: "2026-10-06T13:00:00.000Z",
+  };
+  const postsCase = {
+    captureMode: "posts",
+    manifestStatus: "completed",
+    lastRun: { ...completed.result.files.last_run, run_status: "completed_with_rows" },
+    scanRows: [postRow],
+  };
+  const directPost = await runCase(postsCase);
+  assert.ifError(directPost.error);
+  assert.equal(directPost.result.status, "completed");
+  assert.equal(directPost.result.checkpoint_saved, true);
+  assert.equal(directPost.browser.newPageCount, 1);
+  assert.deepEqual(directPost.rows.map(({ source_type, content_url, published_at_text }) =>
+    [source_type, content_url, published_at_text]), [["post", postUrl, "2026-10-06T13:00:00.000Z"]]);
+
+  const commentInPosts = await runCase({
+    ...postsCase,
+    scanRows: [{ ...postRow, content_url: `${postUrl}?comment_id=789`, source_type: "comment" }],
+  });
+  assert.match(commentInPosts.error?.message, /does not match direct posts capture mode/);
+  assert.equal(commentInPosts.commands.length, 0);
+
+  const missingPost = await runCase({
+    ...postsCase,
+    lastRun: { ...postsCase.lastRun, feed_metrics: { capture: { unverified_posts_in_window: 1 } } },
+  });
+  assert.ifError(missingPost.error);
+  assert.equal(missingPost.result.status, "checkpoint_not_saved");
+  assert.equal(missingPost.result.error, "post_permalink_unverified");
+  assert.equal(missingPost.commands.length, 0);
+  assert.equal(missingPost.checkpointDocument.groups["https://www.facebook.com/groups/example/"].checkpoint,
+    "2026-10-06T00:00:00.000Z");
 
   const fileFailure = await runCase({
     lastRun: {
