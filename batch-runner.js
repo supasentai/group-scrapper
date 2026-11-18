@@ -207,6 +207,15 @@ function parseCheckpointsJson(input) {
     const inputRow = Number(record.input_row || entries.length + 1);
     if (!Number.isSafeInteger(inputRow) || inputRow <= 0) throw new Error(`checkpoints_file_input_row_invalid:${key}`);
     const explicitStatus = String(record.status || "").trim();
+    let allowedProfilePorts = null;
+    if (record.allowed_profile_ports !== undefined) {
+      if (!Array.isArray(record.allowed_profile_ports)
+        || record.allowed_profile_ports.some((port) => !Number.isSafeInteger(port) || port < 1 || port > 65535)
+        || (record.enabled !== false && record.allowed_profile_ports.length === 0)) {
+        throw new Error(`checkpoints_file_allowed_profile_ports_invalid:${key}`);
+      }
+      allowedProfilePorts = [...new Set(record.allowed_profile_ports)];
+    }
     const supportedStatuses = new Set(["pending", "failed", "stopped", "not_run", "needs_user_action", "profile_limited", "not_member", "no_available_profile"]);
     if (record.enabled !== false && explicitStatus && !supportedStatuses.has(explicitStatus)) {
       throw new Error(`checkpoints_file_status_invalid:${key}:${explicitStatus}`);
@@ -219,6 +228,7 @@ function parseCheckpointsJson(input) {
       group_url: canonicalKey,
       checkpoint: record.checkpoint || null,
       enabled: record.enabled !== false,
+      allowed_profile_ports: allowedProfilePorts,
       status: record.enabled === false ? "skipped_disabled" : (explicitStatus || "pending"),
       source_status: explicitStatus || null,
       error: record.enabled === false ? "group_disabled" : null,
@@ -711,11 +721,13 @@ function configuredCdpEndpoints(config) {
   return [...new Set(values.map((endpoint) => browserRunner.validateCdpEndpoint(endpoint)))];
 }
 
-function findNextProfileIndex(endpoints, startIndex, attempted, disabled) {
+function findNextProfileIndex(endpoints, startIndex, attempted, disabled, allowedPorts = null) {
   for (let offset = 0; offset < endpoints.length; offset += 1) {
     const index = (startIndex + offset) % endpoints.length;
     const endpoint = endpoints[index];
-    if (!attempted.has(endpoint) && !disabled.has(endpoint)) return index;
+    const port = browserRunner.cdpPortFromEndpoint(endpoint);
+    if (!attempted.has(endpoint) && !disabled.has(endpoint)
+      && (!allowedPorts || allowedPorts.includes(port))) return index;
   }
   return -1;
 }
@@ -727,6 +739,16 @@ function runBatch(config, dependencies = {}) {
     ? parseGroupsCsv(inputBuffer.toString("utf8"))
     : parseCheckpointsJson(inputBuffer.toString("utf8"));
   const groups = prepareEntries(parsed);
+  // Legacy CSV inputs must respect the same per-group account access as the
+  // main checkpoint file; otherwise a retry could use an ineligible profile.
+  if (config.groupsFile && config.checkpointsFile && fs.existsSync(config.checkpointsFile)) {
+    const configuredGroups = parseCheckpointsJson(fs.readFileSync(config.checkpointsFile, "utf8")).entries;
+    const permissions = new Map(configuredGroups.map((entry) => [entry.group_url, entry]));
+    for (const group of groups) {
+      const configured = permissions.get(group.group_url);
+      if (configured) group.allowed_profile_ports = configured.enabled === false ? [] : configured.allowed_profile_ports;
+    }
+  }
   for (const group of groups) {
     group.execution = "new";
     group.previous_status = null;
@@ -761,7 +783,7 @@ function runBatch(config, dependencies = {}) {
     let cursor = activeProfileIndex;
     let normalized = null;
     while (attemptedEndpoints.size < endpoints.length) {
-      const profileIndex = findNextProfileIndex(endpoints, cursor, attemptedEndpoints, disabledProfiles);
+      const profileIndex = findNextProfileIndex(endpoints, cursor, attemptedEndpoints, disabledProfiles, group.allowed_profile_ports);
       if (profileIndex < 0) break;
       const endpoint = endpoints[profileIndex];
       attemptedEndpoints.add(endpoint);
@@ -783,6 +805,14 @@ function runBatch(config, dependencies = {}) {
         status: normalized.status,
         error: normalized.error || null,
       });
+      // A broken CDP transport cannot run other groups on this endpoint.
+      // Do not label it a Facebook limit, but try another eligible profile.
+      if (normalized.status === "failed" && /browserType\.connectOverCDP:.*(?:Timeout|ECONNREFUSED|ECONNRESET)/i.test(normalized.error || "")) {
+        disabledProfiles.add(endpoint);
+        cursor = (profileIndex + 1) % endpoints.length;
+        activeProfileIndex = cursor;
+        continue;
+      }
       if (normalized.status === "profile_limited") {
         disabledProfiles.add(endpoint);
         cursor = (profileIndex + 1) % endpoints.length;
