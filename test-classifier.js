@@ -19,6 +19,12 @@ assert.deepEqual(pilot.CSV_HEADERS, [
 ]);
 assert.equal(pilot.isLikelyUiGroupHeading("Thông báo"), true);
 assert.equal(pilot.isLikelyUiGroupHeading("Facelift Support Group"), false);
+assert.deepEqual(pilot.detectProcedures("Anyone do facial Co2 laser in Mexico any recommendations?"), ["co2_laser"]);
+assert.deepEqual(pilot.detectProcedures("Looking for fractional CO₂ resurfacing"), ["co2_laser"]);
+assert.deepEqual(pilot.detectProcedures("Recommendations for laser CO2"), ["co2_laser"]);
+assert.deepEqual(pilot.detectProcedures("Reducing CO2 emissions"), []);
+assert.equal(pilot.analyzeText("Anyone do facial Co2 laser in Mexico any recommendations or don’t use warnings. Were you happy with the results?").segment, "potential_customer");
+assert.equal(pilot.analyzeText("I had CO2 laser and my recovery was difficult; any recommendations?").segment, "experienced_customer");
 assert.equal(pilot.isLikelyMemberCount("34,3K thành viên"), true);
 assert.equal(pilot.isLikelyMemberCount("34,3K members"), true);
 assert.equal(pilot.isLikelyMemberCount("Face | Neck Support Group"), false);
