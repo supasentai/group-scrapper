@@ -90,6 +90,7 @@
     ["brow_lift", /\b(?:brow ?lift|forehead reduction|nâng chân mày|nang chan may)\b/i],
     ["temple_lift", /\b(?:temple ?lift|endoscopic temple lift)\b/i],
     ["skin_tightening", /\b(?:skin tightening|tighten my skin|firmer skin|căng da|cang da)\b/i],
+    ["co2_laser", /(?<![\p{L}\p{N}])(?:(?:fractional\s+)?co\s*[2₂]\s*(?:laser|resurfacing)|laser\s+co\s*[2₂]|fractional\s+co\s*[2₂])(?=$|[^\p{L}\p{N}])/iu],
     ["rhinoplasty", /\b(?:rhinoplasty|nose job|nâng mũi|nang mui|sửa mũi|sua mui)\b/i],
     ["eyelid", /\b(?:bleph(?:aroplasty)?|eyelid surgery|double eyelid|lower bleph|upper bleph|cắt mí|cat mi|nhấn mí|nhan mi)\b/i],
     ["filler_botox", /\b(?:fillers?|botox|tiêm filler|tiem filler)\b/i],
@@ -713,6 +714,11 @@
     const strongSeedingSignals = countMatches(STRONG_SEEDING_PATTERNS, clean);
     const doctorOrClinic = extractDoctorOrClinic(clean);
     const hasQuestion = /\?/.test(clean);
+    // Asking others about their results is not itself a claim that the
+    // author already underwent a CO2 procedure.
+    const co2RecommendationRequest = procedures.includes("co2_laser")
+      && /\b(?:any recommendations?|recommend(?:ation)?s?|where (?:can|should)|how much|price|cost)\b/i.test(clean)
+      && !/\b(?:i had|i've had|i have had|i did|my (?:surgery|procedure|recovery)|post[- ]?op)\b/i.test(clean);
 
     let intentScore = 0;
     intentScore += Math.min(30, procedures.length * 15);
@@ -747,7 +753,7 @@
     let segment = "noise";
     if (seedingRisk >= 60) {
       segment = "seed_suspect";
-    } else if (experienceSignals > 0 && (experienceSignals >= prospectSignals || /\breview\b/i.test(clean))) {
+    } else if (!co2RecommendationRequest && experienceSignals > 0 && (experienceSignals >= prospectSignals || /\breview\b/i.test(clean))) {
       segment = "experienced_customer";
     } else if (prospectSignals > 0 && intentScore >= CONFIG.minimumIntentScore) {
       segment = "potential_customer";
@@ -907,11 +913,11 @@
 
   function getTimeLinkLabel(link) {
     const labels = [
-      link?.innerText,
-      link?.textContent,
       link?.getAttribute?.("aria-label"),
       link?.getAttribute?.("title"),
       link?.getAttribute?.("data-tooltip-content"),
+      link?.innerText,
+      link?.textContent,
     ].map(normalizeSpace).filter(Boolean);
     return labels.find((value) => {
       TIME_TEXT_PATTERN.lastIndex = 0;
@@ -1189,6 +1195,8 @@
           interactionState.unverifiedPostCards.set(cardKey, {
             published_at: publishedAt,
             text_fingerprint_sha256: await digestFingerprint(text),
+            author_name: author.name || "",
+            text_excerpt: text,
             has_time_link: Boolean(timeLink),
             has_datetime: Boolean(datetime),
             had_direct_permalink: Boolean(permalink),
@@ -1723,6 +1731,24 @@
     return previousRounds + 1;
   }
 
+  async function collectFeedRound(interactionState, postsOnly, operations = {}) {
+    const readPosts = operations.readPosts || collectFeedPosts;
+    const readDiscussion = operations.readDiscussion || collectRenderedRecords;
+    const expandDiscussion = operations.expandDiscussion || expandVisibleDiscussion;
+    // Discussion expansion and comment permalink recovery can replace or
+    // virtualize a story card. Capture visible posts before those actions.
+    const initialPosts = await readPosts(interactionState);
+    if (postsOnly) return initialPosts;
+    await expandDiscussion();
+    return [...initialPosts, ...await readDiscussion(interactionState), ...await readPosts(interactionState)];
+  }
+
+  function nextFeedScrollTop(currentTop, viewportHeight, documentHeight) {
+    const maxTop = Math.max(0, documentHeight - viewportHeight);
+    const step = Math.max(1, Math.floor(viewportHeight * 0.8));
+    return Math.min(maxTop, currentTop + step);
+  }
+
   async function run(options = {}) {
     if (typeof document === "undefined") throw new Error("Chỉ chạy script này trên trang Facebook trong trình duyệt.");
     Object.assign(CONFIG, options);
@@ -1790,9 +1816,8 @@
       && (!CONFIG.maxRounds || round < CONFIG.maxRounds)
       && (!CONFIG.maxRuntimeMs || Date.now() - scanStartedAt.getTime() < CONFIG.maxRuntimeMs)) {
       round += 1;
-      if (!postsOnly) await expandVisibleDiscussion();
       const freshRecords = [];
-      for (const record of await collect(interactionState)) {
+      for (const record of await collectFeedRound(interactionState, postsOnly)) {
         if (!records.has(record.key)) freshRecords.push(record);
         records.set(record.key, record);
       }
@@ -1835,19 +1860,21 @@
 
       const before = feedScrollHeight();
       const previousLoadedCount = loadedFeedCount(feedHydrationSnapshot());
-      // Smooth scrolling can leave the viewport between hydration states and
-      // makes the fixed sleep below sample the skeleton instead of the feed.
-      window.scrollTo({ top: before, behavior: "auto" });
+      // Advance with overlap. Jumping to the document bottom can skip cards
+      // that Facebook inserts and virtualizes between two observations.
+      const scrollTopBefore = window.scrollY;
+      window.scrollTo({ top: nextFeedScrollTop(scrollTopBefore, window.innerHeight, before), behavior: "auto" });
       const hydrated = await waitForPostScrollHydration(before, previousLoadedCount);
       const after = hydrated.height;
+      const viewportProgressed = window.scrollY > scrollTopBefore;
       feedMetrics.scrollAttempts += 1;
-      if (hydrated.progressed) feedMetrics.progressEvents += 1;
+      if (hydrated.progressed || viewportProgressed) feedMetrics.progressEvents += 1;
       feedMetrics.topLevelArticlesAfter = Math.max(
         feedMetrics.topLevelArticlesAfter,
         Number(hydrated.topLevelArticles || 0),
       );
       feedMetrics.loadingSkeletonSeen = feedMetrics.loadingSkeletonSeen || Boolean(hydrated.loading);
-      idleRounds = hydrated.progressed && after > lastHeight ? 0 : idleRounds + 1;
+      idleRounds = viewportProgressed || (hydrated.progressed && after > lastHeight) ? 0 : idleRounds + 1;
       lastHeight = after;
       if (!hydrated.progressed) await sleep(CONFIG.scrollIntervalMs);
     }
@@ -2020,6 +2047,9 @@
     filterRecordsSince,
     boundaryStopReason,
     advanceOldPostRounds,
+    collectFeedRound,
+    nextFeedScrollTop,
+    getTimeLinkLabel,
     publishedTimestamp,
     inferAuthorFromText,
     inferSourceType,
