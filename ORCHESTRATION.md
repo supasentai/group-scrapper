@@ -110,6 +110,10 @@ node .\batch-runner.js --checkpoints-file .\checkpoints.json --results-dir .\res
 
 Batch phải tạo một `batch_manifest_<id>.json` có `input_path`, `input_hash`, `input_type`, danh sách `cdp_endpoints`, timestamp ISO, `requested_group_count`, `groups` và `counts`. Với JSON, key URL phải canonical và khớp `group_url`; `group_name` bắt buộc; `enabled=false` được ghi `skipped_disabled`. Với CSV legacy, dòng trống, URL sai và URL trùng lần lượt là `skipped_blank`, `skipped_invalid`, `skipped_duplicate`. Chỉ manifest hợp lệ do browser runner trả về với `status=zero_result` mới được ghi `zero_result`; thiếu artifact là `failed`. Khi gặp `needs_user_action`, batch dừng để người dùng xử lý thủ công và đánh dấu các group còn lại là `not_run`. Với `profile_limited` hoặc `not_member`, batch tự thử endpoint tiếp theo; nếu không còn profile truy cập được thì ghi `no_available_profile`, không tiến checkpoint. Không tự nhập credential và không bypass CAPTCHA.
 
+`allowed_profile_ports` trong từng group của `checkpoints.json` là danh sách profile được phép chạy theo phân công hiện hành. Batch chỉ thử các cổng trong danh sách, kể cả khi đầu vào là CSV legacy có group trùng với file checkpoint; group bị tắt không có profile được phép. Nếu không còn cổng phù hợp, ghi `no_available_profile` và giữ nguyên checkpoint. Group không có trường này giữ cách chọn profile cũ để tương thích dữ liệu legacy. Phân công ngày 18/11/2026 gồm 19 group cho 9222, trong đó 16 group cũng dùng được 9223; ba group chỉ 9222 là `2038671846493827`, `670648272394036`, `290533306574241`.
+
+Khi chạy trực tiếp `browser-runner.js` hoặc công cụ khác ngoài batch, người điều phối phải đối chiếu `enabled` và `allowed_profile_ports` trước khi chọn profile; cơ chế lọc cổng tự động ở trên thuộc về `batch-runner.js`.
+
 Collector mặc định chạy `captureMode=all`: chỉ áp dụng date/checkpoint window, UI cleanup và technical dedupe; không dùng segment, intent, authenticity hoặc seeding để loại row. Classification chỉ chạy explicit ở bước aggregate/merge với `--classify`.
 
 ### Cross-group Aggregation Phase 3
@@ -158,7 +162,10 @@ trước khi người dùng yêu cầu; báo nguy cơ chồng khoảng thời gi
    xảy ra của bác sĩ người viết theo tiêu chí “my doctor + V-ed”. Giữ comment
    đại diện qua bước lọc này; chỉ lọc comment khi người dùng yêu cầu rõ. Giữ
    post thiếu ngữ cảnh, ghi vào danh sách cần xem lại; lưu các dòng loại và lý
-   do. Không tự thêm bộ lọc quảng cáo hay tiêu chí nội dung khác.
+   do. Theo yêu cầu ngày 18/11/2026, đưa laser CO2 (kể cả fractional CO2 và
+   CO₂ laser) vào phạm vi dịch vụ cần tìm; bài hỏi nơi thực hiện, chi phí hoặc
+   xin giới thiệu vẫn được xét theo các tiêu chí nội dung và ngoại lệ đã chốt.
+   Không tự thêm bộ lọc quảng cáo hay tiêu chí nội dung khác.
 4. **Formatting:** xuất đúng sáu cột `Tên nhóm`, `URL nhóm`, `URL nội dung`,
    `Tên tài khoản`, `Thời điểm đăng`, `Trích đoạn nội dung`. Dùng một mốc tính
    thời gian tương đối là thời điểm thực hiện formatting, trừ khi người dùng
